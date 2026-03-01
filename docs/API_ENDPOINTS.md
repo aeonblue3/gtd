@@ -1,0 +1,456 @@
+# GTD API Endpoints
+
+This document describes the current API surface exposed by `gtd server`.
+
+For non-2xx behavior, see `docs/API_ERROR_CONTRACT.md`.
+
+## Base URL
+
+- Default local base URL: `http://127.0.0.1:8080`
+- Public health route: `/health`
+- Authenticated API routes: `/api/*`
+- Versioned API routes (preferred for new clients): `/api/v1/*`
+
+## Versioning Policy
+
+- `v1` is currently the active API version.
+- `/api/v1/*` and `/api/*` are currently equivalent.
+- New clients should prefer `/api/v1/*` to reduce future migration risk.
+
+## Authentication
+
+Authenticated routes accept either:
+
+- `Authorization: Bearer <api_key>`
+- Cookie token (`gtd_api_key` by default, or fallback `access_token`)
+
+For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send:
+
+- `X-CSRF-Token: <value from csrf cookie/login response>`
+
+---
+
+## Health
+
+### `GET /health`
+- Auth: none
+- Request body: none
+- Response `200`:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+## Auth Endpoints
+
+### `POST /api/auth/login`
+- Auth: none
+- Body:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "secret",
+  "totp_code": "123456"
+}
+```
+
+- Response `200`:
+
+```json
+{
+  "session_id": "sess_...",
+  "user_id": "user-id",
+  "access_token": "token",
+  "refresh_token": "token",
+  "expires_at": 1700000000,
+  "csrf_token": "token"
+}
+```
+
+- Notes:
+  - Also sets `access_token` and `refresh_token` HttpOnly cookies.
+  - Also sets a readable CSRF cookie and returns `csrf_token`.
+  - Requires MFA to be enabled first.
+
+### `POST /api/auth/logout`
+- Auth: required
+- Body: none
+- Behavior: revokes the currently authenticated token and clears auth cookies.
+  - API key token -> revokes matching API key.
+  - Session token -> revokes matching auth session.
+- Response `200`:
+
+```json
+{
+  "logged_out": true,
+  "revoked_api_key_id": "uuid"
+}
+```
+
+### `POST /api/auth/refresh`
+- Auth: optional (depends on mode)
+- Body (optional):
+
+```json
+{
+  "description": "rotated-client",
+  "refresh_token": "optional-refresh-token"
+}
+```
+
+- Behavior:
+  - If `refresh_token` (or refresh cookie) is provided: rotates session tokens and revokes old session.
+  - Otherwise with bearer API key token: creates new key and revokes old key.
+- CSRF:
+  - If using cookie refresh (no bearer token), `X-CSRF-Token` must match CSRF cookie value.
+- Response `200`:
+
+```json
+{
+  "id": "new-key-id",
+  "api_key": "new-plaintext-key-returned-once",
+  "description": "rotated-client",
+  "revoked_api_key_id": "old-key-id"
+}
+```
+
+### `POST /api/auth/setup-mfa`
+- Auth: none
+- Body:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "secret"
+}
+```
+
+- Response `200`:
+
+```json
+{
+  "email": "user@example.com",
+  "secret": "BASE32SECRET",
+  "otpauth_url": "otpauth://totp/..."
+}
+```
+
+### `POST /api/auth/verify-mfa`
+- Auth: none
+- Body:
+
+```json
+{
+  "email": "user@example.com",
+  "code": "123456"
+}
+```
+
+- Response `200`:
+
+```json
+{
+  "verified": true
+}
+```
+
+### `POST /api/auth/apikey/create`
+- Auth: required
+- Body (optional):
+
+```json
+{
+  "description": "cli-client"
+}
+```
+
+- Response `201`:
+
+```json
+{
+  "id": "uuid",
+  "api_key": "plaintext_key_returned_once",
+  "description": "cli-client"
+}
+```
+
+### `DELETE /api/auth/apikey/{id}`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "revoked": "uuid"
+}
+```
+
+### `GET /api/auth/sessions`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+[
+  {
+    "id": "session-id",
+    "user_id": "user-id",
+    "expires_at": 1700000000,
+    "created_at": 1700000000,
+    "revoked": false
+  }
+]
+```
+
+- Notes:
+  - Expired sessions are automatically pruned by the backend and omitted from results.
+
+### `DELETE /api/auth/sessions/{id}`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "revoked": "session-id"
+}
+```
+
+### `DELETE /api/auth/sessions/all`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "revoked_count": 2
+}
+```
+
+### `GET /api/auth/csrf`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "csrf_token": "token"
+}
+```
+
+- Notes:
+  - Rotates/sets CSRF cookie and returns matching token.
+  - Useful for SPA bootstrap before first state-changing request.
+
+---
+
+## Task Endpoints
+
+### `GET /api/tasks`
+- Auth: required
+- Query params (optional):
+  - `status` (e.g. `actionable`)
+  - `context` (e.g. `work`)
+  - `priority` (e.g. `high`)
+- Invalid `status`/`priority` values return `400`.
+- Body: none
+- Response `200`: array of task objects.
+
+### `POST /api/tasks`
+- Auth: required
+- Body:
+
+```json
+{
+  "title": "Task title",
+  "description": "Details",
+  "context": ["work"],
+  "status": "inbox",
+  "priority": "none",
+  "dueDate": "2026-02-18T16:00:00Z",
+  "tags": ["tag1"],
+  "notes": "optional",
+  "linkedTasks": ["task-id"],
+  "subtasks": [
+    {
+      "title": "checklist item"
+    }
+  ],
+  "recurrence": "none"
+}
+```
+
+- Notes:
+  - `title` is required.
+  - Accepts `context` or `contexts` for context arrays.
+  - Defaults: `status=inbox`, `priority=none`, `recurrence=none`.
+  - Enum validation:
+    - `status`: `inbox|actionable|waiting|someday|done`
+    - `priority`: `none|low|medium|high`
+    - `recurrence`: `none|daily|weekly|monthly`
+
+### `GET /api/tasks/{id}`
+- Auth: required
+- Body: none
+- Response `200`: task object
+
+### `PUT /api/tasks/{id}`
+- Auth: required
+- Body: partial or full task object (same shape as create)
+- Behavior:
+  - provided fields overwrite existing values
+  - if `status` is set to `done`, `completedAt` is set automatically
+  - enum fields are validated using the same rules as create
+  - set `clearDueDate: true` to explicitly clear a due date
+
+### `DELETE /api/tasks/{id}`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "deleted": "task-id"
+}
+```
+
+### `POST /api/tasks/{id}/complete`
+- Auth: required
+- Body: none
+- Response `200`: updated task object with `status=done` and `completedAt` set
+
+---
+
+## Utility Endpoints
+
+### `GET /api/inbox`
+- Auth: required
+- Body: none
+- Response `200`: tasks where `status=inbox`
+
+### `GET /api/today`
+- Auth: required
+- Body: none
+- Response `200`: actionable tasks due today
+
+### `GET /api/review`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "inbox": 0,
+  "actionable": 0,
+  "waiting": 0,
+  "someday": 0,
+  "done": 0,
+  "completed_this_week": 0
+}
+```
+
+### `GET /api/search?q=keyword`
+- Auth: required
+- Query params:
+  - `q` (required)
+- Body: none
+- Response `200`: tasks with title/description/notes containing query text
+
+### `GET /api/v1/status`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "service": "gtd-api",
+  "api": {
+    "version": "v1"
+  },
+  "runtime": {
+    "started_at": "2026-02-18T12:00:00Z",
+    "uptime_seconds": 123
+  },
+  "auth": {
+    "api_key": true,
+    "password_totp": true
+  },
+  "notifications": {
+    "enabled": true,
+    "scheduler_active": true,
+    "dry_run": true,
+    "restart_required": false
+  }
+}
+```
+
+---
+
+## Notification Endpoints
+
+### `POST /api/v1/notifications/run-now`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "ok": true,
+  "stats": {
+    "scanned": 0,
+    "attempted": 0,
+    "sent": 0,
+    "dry_run": 0,
+    "failed": 0,
+    "skipped": 0
+  }
+}
+```
+
+### `GET /api/v1/notifications/config`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "enabled": false,
+  "check_seconds": 300,
+  "dry_run": true,
+  "email_to": "",
+  "email_from": "gtd@localhost",
+  "smtp_host": "",
+  "smtp_port": 587,
+  "smtp_username": "",
+  "has_smtp_password": false,
+  "restart_required": false
+}
+```
+
+### `PUT /api/v1/notifications/config`
+- Auth: required
+- Body: patch-style update (all fields optional):
+
+```json
+{
+  "enabled": true,
+  "check_seconds": 60,
+  "dry_run": true,
+  "email_to": "me@example.com",
+  "email_from": "gtd@example.com",
+  "smtp_host": "smtp.example.com",
+  "smtp_port": 587,
+  "smtp_username": "smtp-user",
+  "smtp_password": "secret"
+}
+```
+
+- Response `200`: same shape as `GET /api/v1/notifications/config`
+- Note:
+  - `restart_required=true` indicates notifications were enabled in config but the scheduler is not currently active (server restart needed).
+

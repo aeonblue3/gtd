@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GTD</title>
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar card">
+        <div class="brand">
+          <h1>GTD</h1>
+          <p>Powerful and approachable task flow</p>
+        </div>
+        <nav class="nav-links" aria-label="Primary">
+          <button data-view="tasks" class="nav-btn is-active">Tasks</button>
+          <button data-view="inbox" class="nav-btn">Inbox</button>
+          <button data-view="today" class="nav-btn">Today</button>
+          <button data-view="review" class="nav-btn">Review</button>
+          <button data-view="settings" class="nav-btn">Settings</button>
+        </nav>
+      </header>
+
+      <main class="content">
+        <section id="login-view" class="card view is-visible" data-view-panel="login">
+          <h2>Sign In</h2>
+          <p class="muted">Use your email, password, and TOTP code.</p>
+          <form id="login-form" class="stack">
+            <label>
+              Email
+              <input id="login-email" type="email" required />
+            </label>
+            <label>
+              Password
+              <input id="login-password" type="password" required />
+            </label>
+            <label>
+              TOTP Code
+              <input id="login-totp" type="text" inputmode="numeric" required />
+            </label>
+            <button type="submit" class="btn btn-primary">Sign In</button>
+          </form>
+          <p id="login-error" class="error-text"></p>
+        </section>
+
+        <section id="tasks-view" class="card view" data-view-panel="tasks">
+          <div id="tasks-root"></div>
+        </section>
+        <section id="inbox-view" class="card view" data-view-panel="inbox">
+          <div id="inbox-root"></div>
+        </section>
+        <section id="today-view" class="card view" data-view-panel="today">
+          <div id="today-root"></div>
+        </section>
+        <section id="review-view" class="card view" data-view-panel="review">
+          <div id="review-root"></div>
+        </section>
+        <section id="settings-view" class="card view" data-view-panel="settings">
+          <div id="settings-root"></div>
+        </section>
+      </main>
+
+      <footer class="status-footer card" aria-live="polite">
+        <span id="status-backend">Backend: checking...</span>
+        <span id="status-auth">Auth: unknown</span>
+        <span id="status-api">API: -</span>
+      </footer>
+    </div>
+
+    <div id="task-modal" class="modal-overlay" hidden>
+      <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="task-modal-title">
+        <header class="modal-header">
+          <h2 id="task-modal-title">Edit Task</h2>
+          <button id="task-modal-close" class="btn" type="button">Close</button>
+        </header>
+        <form id="task-modal-form" class="stack">
+          <input id="task-modal-id" type="hidden" />
+          <div class="modal-grid">
+            <label>
+              Status
+              <select id="task-modal-status">
+                <option value="inbox">inbox</option>
+                <option value="actionable">actionable</option>
+                <option value="waiting">waiting</option>
+                <option value="someday">someday</option>
+                <option value="done">done</option>
+              </select>
+            </label>
+            <label>
+              Priority
+              <select id="task-modal-priority">
+                <option value="none">none</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Due Date
+            <input id="task-modal-due" type="date" />
+          </label>
+          <label>
+            Description
+            <textarea id="task-modal-description" rows="3"></textarea>
+          </label>
+          <label>
+            Notes
+            <textarea id="task-modal-notes" rows="5"></textarea>
+          </label>
+          <label>
+            Contexts (comma-separated)
+            <input id="task-modal-contexts" type="text" />
+          </label>
+          <label>
+            Tags (comma-separated)
+            <input id="task-modal-tags" type="text" />
+          </label>
+          <div class="modal-actions">
+            <button id="task-modal-save" class="btn btn-primary" type="submit">Save</button>
+            <button id="task-modal-cancel" class="btn" type="button">Cancel</button>
+          </div>
+          <p id="task-modal-feedback" class="muted"></p>
+        </form>
+      </div>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
+

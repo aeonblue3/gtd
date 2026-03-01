@@ -1,0 +1,531 @@
+package storage
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"gtd/internal/database"
+	"gtd/internal/models"
+)
+
+// SQLiteStore persists tasks in SQLite while preserving current task fields.
+type SQLiteStore struct {
+	db *sql.DB
+}
+
+var _ Backend = (*SQLiteStore)(nil)
+
+// NewSQLiteStore opens and migrates a SQLite-backed storage instance.
+func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
+	db, err := database.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := database.Migrate(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &SQLiteStore{db: db}, nil
+}
+
+// Close releases the underlying database handle.
+func (s *SQLiteStore) Close() error {
+	return s.db.Close()
+}
+
+func (s *SQLiteStore) AddTask(task *models.Task) error {
+	if task.ID == "" {
+		task.ID = uuid.New().String()
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now()
+	}
+	if task.Recurrence == "" {
+		task.Recurrence = models.RecurrenceNone
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.upsertTaskRow(tx, task, false); err != nil {
+		return err
+	}
+	if err := s.replaceSubtasks(tx, task.ID, task.Subtasks); err != nil {
+		return err
+	}
+	if err := s.replaceDependencies(tx, task.ID, task.LinkedTasks); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) UpdateTask(task *models.Task) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.upsertTaskRow(tx, task, true); err != nil {
+		return err
+	}
+	if err := s.replaceSubtasks(tx, task.ID, task.Subtasks); err != nil {
+		return err
+	}
+	if err := s.replaceDependencies(tx, task.ID, task.LinkedTasks); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GetTask(id string) (*models.Task, error) {
+	row := s.db.QueryRow(`
+SELECT id, title, description, contexts, status, priority, due_date, created_at, completed_at, tags, notes, recurrence
+FROM tasks
+WHERE id = ?`, id)
+
+	task, err := scanTask(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("task not found: %s", id)
+		}
+		return nil, err
+	}
+
+	subtasks, err := s.loadSubtasks(id)
+	if err != nil {
+		return nil, err
+	}
+	task.Subtasks = subtasks
+
+	deps, err := s.loadDependencies(id)
+	if err != nil {
+		return nil, err
+	}
+	task.LinkedTasks = deps
+
+	return task, nil
+}
+
+func (s *SQLiteStore) DeleteTask(id string) error {
+	res, err := s.db.Exec(`DELETE FROM tasks WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetAllTasks() []*models.Task {
+	rows, err := s.db.Query(`SELECT id FROM tasks`)
+	if err != nil {
+		return []*models.Task{}
+	}
+	defer rows.Close()
+
+	var out []*models.Task
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		task, err := s.GetTask(id)
+		if err != nil {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
+func (s *SQLiteStore) GetTasksByStatus(status models.Status) []*models.Task {
+	rows, err := s.db.Query(`SELECT id FROM tasks WHERE status = ?`, string(status))
+	if err != nil {
+		return []*models.Task{}
+	}
+	defer rows.Close()
+
+	var out []*models.Task
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		task, err := s.GetTask(id)
+		if err != nil {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
+func (s *SQLiteStore) GetTasksByContext(context string) []*models.Task {
+	var out []*models.Task
+	for _, task := range s.GetAllTasks() {
+		for _, ctx := range task.Contexts {
+			if ctx == context {
+				out = append(out, task)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (s *SQLiteStore) GetTasksByContexts(contexts []string) []*models.Task {
+	if len(contexts) == 0 {
+		return s.GetAllTasks()
+	}
+	contextMap := map[string]bool{}
+	for _, ctx := range contexts {
+		contextMap[ctx] = true
+	}
+	var out []*models.Task
+	for _, task := range s.GetAllTasks() {
+		for _, ctx := range task.Contexts {
+			if contextMap[ctx] {
+				out = append(out, task)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (s *SQLiteStore) GetTasksByPriority(priority models.Priority) []*models.Task {
+	rows, err := s.db.Query(`SELECT id FROM tasks WHERE priority = ?`, string(priority))
+	if err != nil {
+		return []*models.Task{}
+	}
+	defer rows.Close()
+
+	var out []*models.Task
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		task, err := s.GetTask(id)
+		if err != nil {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
+func (s *SQLiteStore) AddSubtask(taskID, title string) error {
+	task, err := s.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	task.Subtasks = append(task.Subtasks, models.Subtask{Title: strings.TrimSpace(title)})
+	return s.UpdateTask(task)
+}
+
+func (s *SQLiteStore) CompleteSubtask(taskID string, index int) error {
+	task, err := s.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if index < 0 || index >= len(task.Subtasks) {
+		return fmt.Errorf("subtask index out of range")
+	}
+	now := time.Now()
+	task.Subtasks[index].CompletedAt = &now
+	return s.UpdateTask(task)
+}
+
+func (s *SQLiteStore) AddDependency(taskID, depID string) error {
+	if taskID == depID {
+		return fmt.Errorf("task cannot depend on itself")
+	}
+	if !s.taskExists(taskID) {
+		return fmt.Errorf("task not found: %s", taskID)
+	}
+	if !s.taskExists(depID) {
+		return fmt.Errorf("dependency task not found: %s", depID)
+	}
+
+	graph, err := s.dependencyGraph()
+	if err != nil {
+		return err
+	}
+	if createsCycleGraph(graph, taskID, depID) {
+		return fmt.Errorf("dependency would create a cycle")
+	}
+
+	_, err = s.db.Exec(`INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)`, taskID, depID)
+	return err
+}
+
+func (s *SQLiteStore) RemoveDependency(taskID, depID string) error {
+	_, err := s.db.Exec(`DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?`, taskID, depID)
+	return err
+}
+
+func (s *SQLiteStore) CanStartTask(taskID string) (bool, error) {
+	rows, err := s.db.Query(`
+SELECT t.status
+FROM task_dependencies d
+JOIN tasks t ON t.id = d.depends_on_task_id
+WHERE d.task_id = ?`, taskID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			return false, err
+		}
+		if models.Status(status) != models.StatusDone {
+			return false, nil
+		}
+	}
+	return true, rows.Err()
+}
+
+func (s *SQLiteStore) upsertTaskRow(tx *sql.Tx, task *models.Task, update bool) error {
+	contextsJSON, err := json.Marshal(task.Contexts)
+	if err != nil {
+		return err
+	}
+	tagsJSON, err := json.Marshal(task.Tags)
+	if err != nil {
+		return err
+	}
+
+	if update {
+		res, err := tx.Exec(`
+UPDATE tasks
+SET title = ?, description = ?, contexts = ?, status = ?, priority = ?, due_date = ?, created_at = ?, completed_at = ?, tags = ?, notes = ?, recurrence = ?
+WHERE id = ?`,
+			task.Title, task.Description, string(contextsJSON), string(task.Status), string(task.Priority),
+			timeToUnix(task.DueDate), task.CreatedAt.Unix(), timeToUnix(task.CompletedAt), string(tagsJSON), task.Notes, string(task.Recurrence), task.ID)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return fmt.Errorf("task not found: %s", task.ID)
+		}
+		return nil
+	}
+
+	_, err = tx.Exec(`
+INSERT INTO tasks (id, title, description, contexts, status, priority, due_date, created_at, completed_at, tags, notes, recurrence)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.Title, task.Description, string(contextsJSON), string(task.Status), string(task.Priority),
+		timeToUnix(task.DueDate), task.CreatedAt.Unix(), timeToUnix(task.CompletedAt), string(tagsJSON), task.Notes, string(task.Recurrence))
+	return err
+}
+
+func (s *SQLiteStore) replaceSubtasks(tx *sql.Tx, taskID string, subtasks []models.Subtask) error {
+	if _, err := tx.Exec(`DELETE FROM task_subtasks WHERE task_id = ?`, taskID); err != nil {
+		return err
+	}
+	for i, subtask := range subtasks {
+		if _, err := tx.Exec(`
+INSERT INTO task_subtasks (task_id, position, title, completed_at)
+VALUES (?, ?, ?, ?)`, taskID, i, subtask.Title, timeToUnix(subtask.CompletedAt)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) replaceDependencies(tx *sql.Tx, taskID string, deps []string) error {
+	if _, err := tx.Exec(`DELETE FROM task_dependencies WHERE task_id = ?`, taskID); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, depID := range deps {
+		if depID == taskID || seen[depID] {
+			continue
+		}
+		seen[depID] = true
+		if _, err := tx.Exec(`
+INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id)
+VALUES (?, ?)`, taskID, depID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) loadSubtasks(taskID string) ([]models.Subtask, error) {
+	rows, err := s.db.Query(`
+SELECT title, completed_at
+FROM task_subtasks
+WHERE task_id = ?
+ORDER BY position ASC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subtasks []models.Subtask
+	for rows.Next() {
+		var (
+			title       string
+			completedAt sql.NullInt64
+		)
+		if err := rows.Scan(&title, &completedAt); err != nil {
+			return nil, err
+		}
+		sub := models.Subtask{Title: title}
+		if completedAt.Valid {
+			t := time.Unix(completedAt.Int64, 0)
+			sub.CompletedAt = &t
+		}
+		subtasks = append(subtasks, sub)
+	}
+	return subtasks, rows.Err()
+}
+
+func (s *SQLiteStore) loadDependencies(taskID string) ([]string, error) {
+	rows, err := s.db.Query(`
+SELECT depends_on_task_id
+FROM task_dependencies
+WHERE task_id = ?
+ORDER BY depends_on_task_id ASC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deps []string
+	for rows.Next() {
+		var depID string
+		if err := rows.Scan(&depID); err != nil {
+			return nil, err
+		}
+		deps = append(deps, depID)
+	}
+	return deps, rows.Err()
+}
+
+func (s *SQLiteStore) dependencyGraph() (map[string][]string, error) {
+	rows, err := s.db.Query(`SELECT task_id, depends_on_task_id FROM task_dependencies`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	graph := map[string][]string{}
+	for rows.Next() {
+		var taskID, depID string
+		if err := rows.Scan(&taskID, &depID); err != nil {
+			return nil, err
+		}
+		graph[taskID] = append(graph[taskID], depID)
+	}
+	return graph, rows.Err()
+}
+
+func (s *SQLiteStore) taskExists(taskID string) bool {
+	row := s.db.QueryRow(`SELECT 1 FROM tasks WHERE id = ? LIMIT 1`, taskID)
+	var one int
+	return row.Scan(&one) == nil
+}
+
+func createsCycleGraph(graph map[string][]string, taskID, depID string) bool {
+	g := map[string][]string{}
+	for k, v := range graph {
+		g[k] = append([]string{}, v...)
+	}
+	if !slices.Contains(g[taskID], depID) {
+		g[taskID] = append(g[taskID], depID)
+	}
+
+	visited := map[string]bool{}
+	var dfs func(string) bool
+	dfs = func(cur string) bool {
+		if cur == taskID {
+			return true
+		}
+		if visited[cur] {
+			return false
+		}
+		visited[cur] = true
+		for _, nxt := range g[cur] {
+			if dfs(nxt) {
+				return true
+			}
+		}
+		return false
+	}
+	return dfs(depID)
+}
+
+func scanTask(scanner interface {
+	Scan(dest ...any) error
+}) (*models.Task, error) {
+	var (
+		task                    models.Task
+		contextsJSON, tagsJSON  string
+		dueDate, completedAt    sql.NullInt64
+		recurrence, status      string
+		priority                string
+		createdAtUnix           int64
+	)
+	if err := scanner.Scan(
+		&task.ID, &task.Title, &task.Description, &contextsJSON, &status, &priority,
+		&dueDate, &createdAtUnix, &completedAt, &tagsJSON, &task.Notes, &recurrence,
+	); err != nil {
+		return nil, err
+	}
+
+	task.Status = models.Status(status)
+	task.Priority = models.Priority(priority)
+	task.Recurrence = models.Recurrence(recurrence)
+	task.CreatedAt = time.Unix(createdAtUnix, 0)
+	task.Contexts = []string{}
+	task.Tags = []string{}
+	task.Subtasks = []models.Subtask{}
+	task.LinkedTasks = []string{}
+
+	if err := json.Unmarshal([]byte(contextsJSON), &task.Contexts); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(tagsJSON), &task.Tags); err != nil {
+		return nil, err
+	}
+	if dueDate.Valid {
+		t := time.Unix(dueDate.Int64, 0)
+		task.DueDate = &t
+	}
+	if completedAt.Valid {
+		t := time.Unix(completedAt.Int64, 0)
+		task.CompletedAt = &t
+	}
+	return &task, nil
+}
+
+func timeToUnix(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Unix()
+}
+
