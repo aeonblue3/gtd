@@ -715,18 +715,44 @@ function projectList(root) {
 
     const actions = document.createElement("div");
     actions.className = "task-actions";
+
+    const renameInput = document.createElement("input");
+    renameInput.type = "text";
+    renameInput.value = project.name;
+    renameInput.hidden = true;
+    renameInput.ariaLabel = "Project name";
+
     const edit = document.createElement("button");
     edit.className = "btn";
     edit.textContent = "Rename";
+    const saveRename = document.createElement("button");
+    saveRename.className = "btn";
+    saveRename.textContent = "Save Name";
+    saveRename.hidden = true;
+
     edit.addEventListener("click", async () => {
-      const nextName = window.prompt("Project name", project.name);
+      const enteringEdit = renameInput.hidden;
+      renameInput.hidden = !renameInput.hidden;
+      saveRename.hidden = !saveRename.hidden;
+      edit.textContent = enteringEdit ? "Cancel" : "Rename";
+      if (enteringEdit) {
+        renameInput.focus();
+        renameInput.select();
+      }
+    });
+
+    saveRename.addEventListener("click", async () => {
+      const nextName = renameInput.value.trim();
       if (!nextName) {
+        showToast("Project name is required.", true);
+        renameInput.focus();
         return;
       }
+      startButtonPending(saveRename);
       startButtonPending(edit);
       try {
         await updateProject(project.id, {
-          name: nextName.trim(),
+          name: nextName,
           description: project.description || "",
         });
         showToast("Project updated.");
@@ -735,15 +761,22 @@ function projectList(root) {
         showToast(err.message || "Could not update project", true);
       } finally {
         stopButtonPending(edit);
+        stopButtonPending(saveRename);
       }
     });
 
     const del = document.createElement("button");
     del.className = "btn";
     del.textContent = "Delete";
+    let confirmDelete = false;
     del.addEventListener("click", async () => {
-      const confirmed = window.confirm("Delete project? Tasks will be unassigned.");
-      if (!confirmed) {
+      if (!confirmDelete) {
+        confirmDelete = true;
+        del.textContent = "Confirm Delete";
+        setTimeout(() => {
+          confirmDelete = false;
+          del.textContent = "Delete";
+        }, 3000);
         return;
       }
       startButtonPending(del);
@@ -759,9 +792,11 @@ function projectList(root) {
     });
 
     actions.appendChild(edit);
+    actions.appendChild(saveRename);
     actions.appendChild(del);
     card.appendChild(title);
     card.appendChild(desc);
+    card.appendChild(renameInput);
     card.appendChild(actions);
     list.appendChild(card);
   }

@@ -15,6 +15,7 @@ import (
 	"gtd/internal/auth"
 	"gtd/internal/config"
 	"gtd/internal/database"
+	"gtd/internal/models"
 	"gtd/internal/storage"
 )
 
@@ -309,6 +310,146 @@ func TestTaskUpdateClearDueDate(t *testing.T) {
 	}
 	if v, ok := updated["dueDate"]; ok && v != nil {
 		t.Fatalf("expected dueDate cleared, got %#v", v)
+	}
+}
+
+func TestProjectsAndTaskProjectLocationFlow(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "gtd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	srv := NewServer(store, &config.ServerConfig{APITokenName: "gtd_api_key"}, allowAllValidator{}, nil, nil, nil)
+
+	createProjectReq := httptest.NewRequest(http.MethodPost, "/api/v1/projects", bytes.NewBufferString(`{"name":"House","description":"Home commitments"}`))
+	createProjectReq.Header.Set("Authorization", "Bearer test-key")
+	createProjectRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createProjectRec, createProjectReq)
+	if createProjectRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createProjectRec.Code, createProjectRec.Body.String())
+	}
+	var project map[string]any
+	if err := json.Unmarshal(createProjectRec.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+	projectID, _ := project["id"].(string)
+	if projectID == "" {
+		t.Fatalf("missing project id in response: %s", createProjectRec.Body.String())
+	}
+
+	createTaskReq := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"title":"Clean garage","projectId":"`+projectID+`","location":"Home"}`))
+	createTaskReq.Header.Set("Authorization", "Bearer test-key")
+	createTaskRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createTaskRec, createTaskReq)
+	if createTaskRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createTaskRec.Code, createTaskRec.Body.String())
+	}
+	var task map[string]any
+	if err := json.Unmarshal(createTaskRec.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	taskID, _ := task["id"].(string)
+	if taskID == "" {
+		t.Fatalf("missing task id in response: %s", createTaskRec.Body.String())
+	}
+	if gotLocation, _ := task["location"].(string); gotLocation != "Home" {
+		t.Fatalf("expected location=Home, got %#v", task["location"])
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?project_id="+projectID, nil)
+	listReq.Header.Set("Authorization", "Bearer test-key")
+	listRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var list []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected exactly one project-filtered task, got %d", len(list))
+	}
+
+	deleteProjectReq := httptest.NewRequest(http.MethodDelete, "/api/v1/projects/"+projectID, nil)
+	deleteProjectReq.Header.Set("Authorization", "Bearer test-key")
+	deleteProjectRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(deleteProjectRec, deleteProjectReq)
+	if deleteProjectRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", deleteProjectRec.Code, deleteProjectRec.Body.String())
+	}
+
+	getTaskReq := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+taskID, nil)
+	getTaskReq.Header.Set("Authorization", "Bearer test-key")
+	getTaskRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getTaskRec, getTaskReq)
+	if getTaskRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", getTaskRec.Code, getTaskRec.Body.String())
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(getTaskRec.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if val, ok := updated["projectId"]; ok && val != "" && val != nil {
+		t.Fatalf("expected cleared projectId after project delete, got %#v", val)
+	}
+}
+
+func TestReviewReturnsStructuredSections(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "gtd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	overdue := models.NewTask("Past due")
+	duePast := time.Now().Add(-2 * time.Hour)
+	overdue.Status = models.StatusActionable
+	overdue.DueDate = &duePast
+	if err := store.AddTask(overdue); err != nil {
+		t.Fatal(err)
+	}
+
+	waiting := models.NewTask("Waiting item")
+	waiting.Status = models.StatusWaiting
+	waiting.CreatedAt = time.Now().AddDate(0, 0, -10)
+	if err := store.AddTask(waiting); err != nil {
+		t.Fatal(err)
+	}
+
+	done := models.NewTask("Done recent")
+	done.Status = models.StatusDone
+	completed := time.Now().AddDate(0, 0, -1)
+	done.CompletedAt = &completed
+	if err := store.AddTask(done); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(store, &config.ServerConfig{APITokenName: "gtd_api_key"}, allowAllValidator{}, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["summary"].(map[string]any); !ok {
+		t.Fatalf("expected summary object, got %#v", payload["summary"])
+	}
+	sections, ok := payload["sections"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sections object, got %#v", payload["sections"])
+	}
+	for _, key := range []string{"overdue", "due_today", "stale_waiting", "done_recent"} {
+		if _, exists := sections[key]; !exists {
+			t.Fatalf("missing review section %q in %#v", key, sections)
+		}
 	}
 }
 

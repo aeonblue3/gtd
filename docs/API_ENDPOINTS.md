@@ -63,10 +63,8 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
 
 ```json
 {
-  "session_id": "sess_...",
+  "session_id": "uuid",
   "user_id": "user-id",
-  "access_token": "token",
-  "refresh_token": "token",
   "expires_at": 1700000000,
   "csrf_token": "token"
 }
@@ -76,6 +74,8 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   - Also sets `access_token` and `refresh_token` HttpOnly cookies.
   - Also sets a readable CSRF cookie and returns `csrf_token`.
   - Requires MFA to be enabled first.
+  - Access/refresh tokens are omitted from JSON by default for cookie-first browser flow.
+  - To include tokens in response body for non-browser clients, send header `X-Return-Tokens: true`.
 
 ### `POST /api/auth/logout`
 - Auth: required
@@ -118,6 +118,22 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   "revoked_api_key_id": "old-key-id"
 }
 ```
+
+- Session refresh response shape:
+
+```json
+{
+  "session_id": "uuid",
+  "user_id": "user-id",
+  "expires_at": 1700000000,
+  "revoked_session_id": "old-session-id",
+  "csrf_token": "token"
+}
+```
+
+- Notes:
+  - Session refresh omits `access_token`/`refresh_token` from JSON unless `X-Return-Tokens: true` is sent.
+  - Session cookies are always rotated/set for successful refresh.
 
 ### `POST /api/auth/setup-mfa`
 - Auth: none
@@ -257,6 +273,8 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   - `status` (e.g. `actionable`)
   - `context` (e.g. `work`)
   - `priority` (e.g. `high`)
+  - `project_id` (preferred)
+  - `projectId` (alias)
 - Invalid `status`/`priority` values return `400`.
 - Body: none
 - Response `200`: array of task objects.
@@ -270,6 +288,8 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   "title": "Task title",
   "description": "Details",
   "context": ["work"],
+  "projectId": "project-id",
+  "location": "Home Office",
   "status": "inbox",
   "priority": "none",
   "dueDate": "2026-02-18T16:00:00Z",
@@ -288,6 +308,8 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
 - Notes:
   - `title` is required.
   - Accepts `context` or `contexts` for context arrays.
+  - `projectId` is optional; when provided it must reference an existing project.
+  - `location` is optional free-text.
   - Defaults: `status=inbox`, `priority=none`, `recurrence=none`.
   - Enum validation:
     - `status`: `inbox|actionable|waiting|someday|done`
@@ -304,6 +326,7 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
 - Body: partial or full task object (same shape as create)
 - Behavior:
   - provided fields overwrite existing values
+  - `projectId` and `location` can be set/changed with normal partial update semantics
   - if `status` is set to `done`, `completedAt` is set automatically
   - enum fields are validated using the same rules as create
   - set `clearDueDate: true` to explicitly clear a due date
@@ -326,6 +349,69 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
 
 ---
 
+## Project Endpoints
+
+### `GET /api/projects`
+- Auth: required
+- Body: none
+- Response `200`: array of project objects
+
+### `POST /api/projects`
+- Auth: required
+- Body:
+
+```json
+{
+  "name": "Project name",
+  "description": "optional"
+}
+```
+
+- Response `201`:
+
+```json
+{
+  "id": "uuid",
+  "name": "Project name",
+  "description": "optional",
+  "createdAt": "2026-01-01T00:00:00Z"
+}
+```
+
+### `GET /api/projects/{id}`
+- Auth: required
+- Body: none
+- Response `200`: project object
+
+### `PUT /api/projects/{id}`
+- Auth: required
+- Body:
+
+```json
+{
+  "name": "Renamed project",
+  "description": "optional"
+}
+```
+
+- Response `200`: updated project object
+
+### `DELETE /api/projects/{id}`
+- Auth: required
+- Body: none
+- Response `200`:
+
+```json
+{
+  "deleted": "project-id"
+}
+```
+
+- Notes:
+  - Deleting a project unassigns related tasks (`projectId` is cleared on tasks).
+
+---
+
 ## Utility Endpoints
 
 ### `GET /api/inbox`
@@ -345,12 +431,32 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
 
 ```json
 {
-  "inbox": 0,
-  "actionable": 0,
-  "waiting": 0,
-  "someday": 0,
-  "done": 0,
-  "completed_this_week": 0
+  "summary": {
+    "inbox": 0,
+    "actionable": 0,
+    "waiting": 0,
+    "someday": 0,
+    "done": 0,
+    "completed_this_week": 0
+  },
+  "sections": {
+    "overdue": {
+      "count": 0,
+      "tasks": []
+    },
+    "due_today": {
+      "count": 0,
+      "tasks": []
+    },
+    "stale_waiting": {
+      "count": 0,
+      "tasks": []
+    },
+    "done_recent": {
+      "count": 0,
+      "tasks": []
+    }
+  }
 }
 ```
 
