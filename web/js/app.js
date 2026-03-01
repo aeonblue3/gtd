@@ -1,6 +1,6 @@
 import { login, logout } from "./auth.js";
 import { fetchHealth, fetchStatus } from "./api.js";
-import { renderInbox, renderReview, renderTasks, renderToday } from "./tasks.js";
+import { renderInbox, renderProjects, renderReview, renderTasks, renderToday } from "./tasks.js";
 import { renderSettings } from "./settings.js";
 
 const state = {
@@ -23,6 +23,7 @@ const roots = {
   inbox: document.getElementById("inbox-root"),
   today: document.getElementById("today-root"),
   review: document.getElementById("review-root"),
+  projects: document.getElementById("projects-root"),
   settings: document.getElementById("settings-root"),
 };
 
@@ -105,6 +106,9 @@ async function render() {
         break;
       case "review":
         await renderReview(roots.review);
+        break;
+      case "projects":
+        await renderProjects(roots.projects);
         break;
       case "settings":
         await renderSettings(roots.settings);

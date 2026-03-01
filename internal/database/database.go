@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT,
     contexts TEXT NOT NULL,
+    project_id TEXT,
+    location TEXT,
     status TEXT NOT NULL,
     priority TEXT NOT NULL,
     due_date INTEGER,
@@ -61,12 +63,20 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
     FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     access_token TEXT NOT NULL UNIQUE,
     refresh_token TEXT UNIQUE,
     expires_at INTEGER NOT NULL,
+    refresh_expires_at INTEGER,
     created_at INTEGER NOT NULL,
     revoked INTEGER NOT NULL DEFAULT 0
 );
@@ -74,6 +84,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
     key_hash TEXT NOT NULL UNIQUE,
+    token_digest TEXT UNIQUE,
     description TEXT,
     created_at INTEGER NOT NULL,
     last_used_at INTEGER,
@@ -95,6 +106,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     totp_secret TEXT,
     totp_enabled INTEGER NOT NULL DEFAULT 0,
+    last_totp_step INTEGER,
     created_at INTEGER NOT NULL
 );
 
@@ -123,6 +135,60 @@ CREATE INDEX IF NOT EXISTS idx_task_notifications_status ON task_notifications(d
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("run database migrations: %w", err)
 	}
+	if err := addColumnIfMissing(db, "tasks", "project_id", "TEXT"); err != nil {
+		return fmt.Errorf("add tasks.project_id column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "tasks", "location", "TEXT"); err != nil {
+		return fmt.Errorf("add tasks.location column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "auth_sessions", "refresh_expires_at", "INTEGER"); err != nil {
+		return fmt.Errorf("add auth_sessions.refresh_expires_at column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "api_keys", "token_digest", "TEXT"); err != nil {
+		return fmt.Errorf("add api_keys.token_digest column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "users", "last_totp_step", "INTEGER"); err != nil {
+		return fmt.Errorf("add users.last_totp_step column: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE auth_sessions SET refresh_expires_at = created_at + 2592000 WHERE refresh_expires_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill auth_sessions.refresh_expires_at: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)`); err != nil {
+		return fmt.Errorf("create tasks.project_id index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_digest ON api_keys(token_digest)`); err != nil {
+		return fmt.Errorf("create api_keys.token_digest index: %w", err)
+	}
 	return nil
 }
 
+func addColumnIfMissing(db *sql.DB, tableName, columnName, columnDef string) error {
+	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == columnName {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = db.Exec("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDef)
+	return err
+}

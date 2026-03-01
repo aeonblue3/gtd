@@ -48,6 +48,12 @@ func (h *TasksHandler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		tasks = filterByPriority(tasks, normalized)
 	}
+	if projectID := strings.TrimSpace(r.URL.Query().Get("project_id")); projectID != "" {
+		tasks = filterByProjectID(tasks, projectID)
+	}
+	if projectID := strings.TrimSpace(r.URL.Query().Get("projectId")); projectID != "" {
+		tasks = filterByProjectID(tasks, projectID)
+	}
 
 	writeJSON(w, http.StatusOK, tasks)
 }
@@ -66,6 +72,8 @@ func (h *TasksHandler) create(w http.ResponseWriter, r *http.Request) {
 	task := models.NewTask(title)
 	task.Description = strings.TrimSpace(in.Description)
 	task.Contexts = cleanStringSlice(in.Contexts())
+	task.ProjectID = strings.TrimSpace(in.ProjectID)
+	task.Location = strings.TrimSpace(in.Location)
 	task.DueDate = in.DueDate
 	task.Tags = cleanStringSlice(in.Tags)
 	task.Notes = strings.TrimSpace(in.Notes)
@@ -150,6 +158,12 @@ func (h *TasksHandler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ContextAlt != nil {
 		task.Contexts = cleanStringSlice(*in.ContextAlt)
+	}
+	if in.ProjectID != nil {
+		task.ProjectID = strings.TrimSpace(*in.ProjectID)
+	}
+	if in.Location != nil {
+		task.Location = strings.TrimSpace(*in.Location)
 	}
 	if in.Status != nil {
 		status, err := normalizeAndValidateStatus(*in.Status)
@@ -263,11 +277,23 @@ func filterByPriority(tasks []*models.Task, priority models.Priority) []*models.
 	return out
 }
 
+func filterByProjectID(tasks []*models.Task, projectID string) []*models.Task {
+	out := make([]*models.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t.ProjectID == projectID {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 type createTaskInput struct {
 	Title        string           `json:"title"`
 	Description  string           `json:"description"`
 	ContextsJSON []string         `json:"contexts"`
 	ContextJSON  []string         `json:"context"`
+	ProjectID    string           `json:"projectId"`
+	Location     string           `json:"location"`
 	Status       string           `json:"status"`
 	Priority     string           `json:"priority"`
 	DueDate      *time.Time       `json:"dueDate"`
@@ -286,18 +312,19 @@ func (c createTaskInput) Contexts() []string {
 }
 
 type updateTaskInput struct {
-	Title       *string           `json:"title"`
-	Description *string           `json:"description"`
-	Contexts    *[]string         `json:"contexts"`
-	ContextAlt  *[]string         `json:"context"`
-	Status      *string           `json:"status"`
-	Priority    *string           `json:"priority"`
-	DueDate     *time.Time        `json:"dueDate"`
-	ClearDueDate *bool            `json:"clearDueDate"`
-	Tags        *[]string         `json:"tags"`
-	Notes       *string           `json:"notes"`
-	LinkedTasks *[]string         `json:"linkedTasks"`
-	Subtasks    *[]models.Subtask `json:"subtasks"`
-	Recurrence  *string           `json:"recurrence"`
+	Title        *string           `json:"title"`
+	Description  *string           `json:"description"`
+	Contexts     *[]string         `json:"contexts"`
+	ContextAlt   *[]string         `json:"context"`
+	ProjectID    *string           `json:"projectId"`
+	Location     *string           `json:"location"`
+	Status       *string           `json:"status"`
+	Priority     *string           `json:"priority"`
+	DueDate      *time.Time        `json:"dueDate"`
+	ClearDueDate *bool             `json:"clearDueDate"`
+	Tags         *[]string         `json:"tags"`
+	Notes        *string           `json:"notes"`
+	LinkedTasks  *[]string         `json:"linkedTasks"`
+	Subtasks     *[]models.Subtask `json:"subtasks"`
+	Recurrence   *string           `json:"recurrence"`
 }
-

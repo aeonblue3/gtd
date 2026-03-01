@@ -19,5 +19,9 @@ type Backend interface {
 	AddDependency(taskID, depID string) error
 	RemoveDependency(taskID, depID string) error
 	CanStartTask(taskID string) (bool, error)
+	CreateProject(project *models.Project) error
+	UpdateProject(project *models.Project) error
+	GetProject(id string) (*models.Project, error)
+	DeleteProject(id string) error
+	GetAllProjects() []*models.Project
 }
-

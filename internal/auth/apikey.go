@@ -3,8 +3,10 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -32,11 +34,12 @@ func (s *APIKeyService) CreateAPIKey(description string) (string, string, error)
 	if err != nil {
 		return "", "", fmt.Errorf("hash api key: %w", err)
 	}
+	digest := tokenDigest(raw)
 
 	id := uuid.New().String()
 	_, err = s.db.Exec(
-		`INSERT INTO api_keys (id, key_hash, description, created_at, revoked) VALUES (?, ?, ?, ?, 0)`,
-		id, string(hash), description, time.Now().Unix(),
+		`INSERT INTO api_keys (id, key_hash, token_digest, description, created_at, revoked) VALUES (?, ?, ?, ?, ?, 0)`,
+		id, string(hash), digest, description, time.Now().Unix(),
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("store api key: %w", err)
@@ -46,19 +49,28 @@ func (s *APIKeyService) CreateAPIKey(description string) (string, string, error)
 
 // ValidateAPIKey validates bearer/cookie API key tokens.
 func (s *APIKeyService) ValidateAPIKey(ctx context.Context, token string) (bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, key_hash FROM api_keys WHERE revoked = 0`)
+	id, hash, err := s.lookupByDigest(ctx, tokenDigest(token))
+	if err != nil {
+		return false, err
+	}
+	if id != "" && bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)) == nil {
+		_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, time.Now().Unix(), id)
+		return true, nil
+	}
+
+	// Backward-compatibility path for legacy keys created before token_digest existed.
+	rows, err := s.db.QueryContext(ctx, `SELECT id, key_hash FROM api_keys WHERE revoked = 0 AND token_digest IS NULL`)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
-
 	for rows.Next() {
-		var id, hash string
-		if err := rows.Scan(&id, &hash); err != nil {
+		var legacyID, legacyHash string
+		if err := rows.Scan(&legacyID, &legacyHash); err != nil {
 			return false, err
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)); err == nil {
-			_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at = ? WHERE id = ?`, time.Now().Unix(), id)
+		if bcrypt.CompareHashAndPassword([]byte(legacyHash), []byte(token)) == nil {
+			_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at = ?, token_digest = ? WHERE id = ?`, time.Now().Unix(), tokenDigest(token), legacyID)
 			return true, nil
 		}
 	}
@@ -120,19 +132,28 @@ func (s *APIKeyService) RotateAPIKeyByToken(ctx context.Context, token, descript
 }
 
 func (s *APIKeyService) findActiveKeyIDByToken(ctx context.Context, token string) (string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, key_hash FROM api_keys WHERE revoked = 0`)
+	id, hash, err := s.lookupByDigest(ctx, tokenDigest(token))
+	if err != nil {
+		return "", err
+	}
+	if id != "" && bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)) == nil {
+		return id, nil
+	}
+
+	// Legacy fallback for keys without digest.
+	rows, err := s.db.QueryContext(ctx, `SELECT id, key_hash FROM api_keys WHERE revoked = 0 AND token_digest IS NULL`)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
-
 	for rows.Next() {
-		var id, hash string
-		if err := rows.Scan(&id, &hash); err != nil {
+		var legacyID, legacyHash string
+		if err := rows.Scan(&legacyID, &legacyHash); err != nil {
 			return "", err
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)); err == nil {
-			return id, nil
+		if bcrypt.CompareHashAndPassword([]byte(legacyHash), []byte(token)) == nil {
+			_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET token_digest = ? WHERE id = ?`, tokenDigest(token), legacyID)
+			return legacyID, nil
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -149,3 +170,19 @@ func generateAPIKey() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
+func tokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *APIKeyService) lookupByDigest(ctx context.Context, digest string) (string, string, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, key_hash FROM api_keys WHERE revoked = 0 AND token_digest = ? LIMIT 1`, digest)
+	var id, hash string
+	if err := row.Scan(&id, &hash); err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", nil
+		}
+		return "", "", err
+	}
+	return id, hash, nil
+}

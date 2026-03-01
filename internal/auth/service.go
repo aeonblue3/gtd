@@ -26,8 +26,8 @@ type LoginResult struct {
 
 // MFASetupResult contains generated TOTP enrollment data.
 type MFASetupResult struct {
-	Email     string `json:"email"`
-	Secret    string `json:"secret"`
+	Email      string `json:"email"`
+	Secret     string `json:"secret"`
 	OTPAuthURL string `json:"otpauth_url"`
 }
 
@@ -117,7 +117,6 @@ func (s *Service) RotateSessionByRefreshToken(ctx context.Context, refreshToken 
 // SetupMFA creates or resets a local user with a new TOTP secret.
 func (s *Service) SetupMFA(ctx context.Context, email, password string) (*MFASetupResult, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
-	password = strings.TrimSpace(password)
 	if email == "" || password == "" {
 		return nil, fmt.Errorf("email and password are required")
 	}
@@ -140,15 +139,15 @@ func (s *Service) SetupMFA(ctx context.Context, email, password string) (*MFASet
 	case nil:
 		_, err = s.db.ExecContext(ctx, `
 UPDATE users
-SET password_hash = ?, totp_secret = ?, totp_enabled = 0
+SET password_hash = ?, totp_secret = ?, totp_enabled = 0, last_totp_step = NULL
 WHERE id = ?`, string(hash), key.Secret(), existingID)
 		if err != nil {
 			return nil, fmt.Errorf("update user setup: %w", err)
 		}
 	case sql.ErrNoRows:
 		_, err = s.db.ExecContext(ctx, `
-INSERT INTO users (id, email, password_hash, totp_secret, totp_enabled, created_at)
-VALUES (?, ?, ?, ?, 0, ?)`, uuid.New().String(), email, string(hash), key.Secret(), time.Now().Unix())
+INSERT INTO users (id, email, password_hash, totp_secret, totp_enabled, last_totp_step, created_at)
+VALUES (?, ?, ?, ?, 0, NULL, ?)`, uuid.New().String(), email, string(hash), key.Secret(), time.Now().Unix())
 		if err != nil {
 			return nil, fmt.Errorf("create setup user: %w", err)
 		}
@@ -184,9 +183,11 @@ func (s *Service) VerifyMFA(ctx context.Context, email, code string) error {
 	if !secret.Valid || strings.TrimSpace(secret.String) == "" {
 		return fmt.Errorf("mfa is not set up for this user")
 	}
-	if !validateTOTPCode(secret.String, code) {
+	ok, step := validateTOTPCode(secret.String, code)
+	if !ok {
 		return fmt.Errorf("invalid mfa code (check device/system clock and try again)")
 	}
+	_ = step
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET totp_enabled = 1 WHERE id = ?`, userID)
 	if err != nil {
 		return fmt.Errorf("enable mfa: %w", err)
@@ -197,7 +198,6 @@ func (s *Service) VerifyMFA(ctx context.Context, email, code string) error {
 // Login validates password+TOTP and creates an auth session.
 func (s *Service) Login(ctx context.Context, email, password, totpCode string) (*LoginResult, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
-	password = strings.TrimSpace(password)
 	totpCode = strings.TrimSpace(totpCode)
 	if email == "" || password == "" || totpCode == "" {
 		return nil, fmt.Errorf("email, password, and totp_code are required")
@@ -226,8 +226,12 @@ LIMIT 1`, email)
 	if enabled == 0 || !secret.Valid || strings.TrimSpace(secret.String) == "" {
 		return nil, fmt.Errorf("mfa is not enabled")
 	}
-	if !validateTOTPCode(secret.String, totpCode) {
+	ok, step := validateTOTPCode(secret.String, totpCode)
+	if !ok {
 		return nil, fmt.Errorf("invalid mfa code")
+	}
+	if err := s.consumeTOTPWindow(ctx, userID, step); err != nil {
+		return nil, err
 	}
 
 	session, err := s.sessions.CreateSession(ctx, userID, 15*time.Minute, 30*24*time.Hour)
@@ -251,19 +255,41 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-func validateTOTPCode(secret, code string) bool {
+func validateTOTPCode(secret, code string) (bool, int64) {
 	// Allow +/- 1 time window to handle minor clock skew.
-	ok, err := totp.ValidateCustom(
-		code,
-		secret,
-		time.Now(),
-		totp.ValidateOpts{
-			Period:    30,
-			Skew:      1,
-			Digits:    otp.DigitsSix,
-			Algorithm: otp.AlgorithmSHA1,
-		},
-	)
-	return err == nil && ok
+	now := time.Now()
+	opts := totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	}
+	currentStep := now.Unix() / int64(opts.Period)
+	for offset := int64(-int(opts.Skew)); offset <= int64(opts.Skew); offset++ {
+		step := currentStep + offset
+		ts := time.Unix(step*int64(opts.Period), 0)
+		ok, err := totp.ValidateCustom(code, secret, ts, opts)
+		if err == nil && ok {
+			return true, step
+		}
+	}
+	return false, 0
 }
 
+func (s *Service) consumeTOTPWindow(ctx context.Context, userID string, step int64) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE users
+SET last_totp_step = ?
+WHERE id = ? AND (last_totp_step IS NULL OR last_totp_step < ?)`, step, userID, step)
+	if err != nil {
+		return fmt.Errorf("update mfa window: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check mfa window update: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("totp code already used")
+	}
+	return nil
+}

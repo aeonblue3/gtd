@@ -30,10 +30,20 @@ func TestSQLiteStoreRoundTripAllTaskFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	project := &models.Project{
+		Name:        "Platform",
+		Description: "Core platform improvements",
+	}
+	if err := s.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+
 	task := &models.Task{
 		Title:       "Ship phase 0",
 		Description: "storage abstraction and sqlite backend",
 		Contexts:    []string{"work", "deep"},
+		ProjectID:   project.ID,
+		Location:    "Home Office",
 		Status:      models.StatusActionable,
 		Priority:    models.PriorityHigh,
 		DueDate:     &due,
@@ -60,6 +70,12 @@ func TestSQLiteStoreRoundTripAllTaskFields(t *testing.T) {
 	if got.Title != task.Title || got.Description != task.Description || got.Notes != task.Notes {
 		t.Fatalf("task scalar fields mismatch: got=%+v", got)
 	}
+	if got.ProjectID != project.ID {
+		t.Fatalf("project mismatch: got=%q want=%q", got.ProjectID, project.ID)
+	}
+	if got.Location != "Home Office" {
+		t.Fatalf("location mismatch: got=%q", got.Location)
+	}
 	if len(got.Contexts) != 2 || got.Contexts[0] != "work" || got.Contexts[1] != "deep" {
 		t.Fatalf("contexts mismatch: %#v", got.Contexts)
 	}
@@ -80,6 +96,49 @@ func TestSQLiteStoreRoundTripAllTaskFields(t *testing.T) {
 	}
 	if len(got.LinkedTasks) != 1 || got.LinkedTasks[0] != other.ID {
 		t.Fatalf("dependencies mismatch: %#v", got.LinkedTasks)
+	}
+}
+
+func TestSQLiteProjectCRUD(t *testing.T) {
+	s := newTestSQLiteStore(t)
+
+	project := &models.Project{Name: "Operations", Description: "Ops tracking"}
+	if err := s.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetProject(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Operations" {
+		t.Fatalf("unexpected name: %q", got.Name)
+	}
+
+	project.Name = "Operations + Infra"
+	if err := s.UpdateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	projects := s.GetAllProjects()
+	if len(projects) != 1 || projects[0].Name != "Operations + Infra" {
+		t.Fatalf("unexpected projects: %#v", projects)
+	}
+
+	task := models.NewTask("Task with project")
+	task.ProjectID = project.ID
+	if err := s.AddTask(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteProject(project.ID); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ProjectID != "" {
+		t.Fatalf("expected task project cleared, got %q", updated.ProjectID)
 	}
 }
 
@@ -107,4 +166,3 @@ func TestSQLiteDependencyCycleDetection(t *testing.T) {
 		t.Fatal("expected cycle detection error")
 	}
 }
-

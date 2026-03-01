@@ -16,8 +16,10 @@ import (
 
 // Store handles reading and writing tasks to disk
 type Store struct {
-	tasksDir string
-	tasks    map[string]*models.Task
+	tasksDir    string
+	projectsDir string
+	tasks       map[string]*models.Task
+	projects    map[string]*models.Project
 }
 
 var _ Backend = (*Store)(nil)
@@ -25,20 +27,29 @@ var _ Backend = (*Store)(nil)
 // NewStore creates a new storage instance
 func NewStore(dataPath string) (*Store, error) {
 	tasksDir := filepath.Join(dataPath, "tasks")
+	projectsDir := filepath.Join(dataPath, "projects")
 
 	// Create directories if they don't exist
 	if err := os.MkdirAll(tasksDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create tasks directory: %w", err)
 	}
+	if err := os.MkdirAll(projectsDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create projects directory: %w", err)
+	}
 
 	s := &Store{
-		tasksDir: tasksDir,
-		tasks:    make(map[string]*models.Task),
+		tasksDir:    tasksDir,
+		projectsDir: projectsDir,
+		tasks:       make(map[string]*models.Task),
+		projects:    make(map[string]*models.Project),
 	}
 
 	// Load existing tasks
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("failed to load tasks: %w", err)
+	}
+	if err := s.loadAllProjects(); err != nil {
+		return nil, fmt.Errorf("failed to load projects: %w", err)
 	}
 
 	return s, nil
@@ -114,6 +125,47 @@ func (s *Store) saveTask(task *models.Task) error {
 	}
 
 	return nil
+}
+
+func (s *Store) loadAllProjects() error {
+	files, err := ioutil.ReadDir(s.projectsDir)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
+			path := filepath.Join(s.projectsDir, file.Name())
+			project, err := s.loadProject(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to load project %s: %v\n", file.Name(), err)
+				continue
+			}
+			s.projects[project.ID] = project
+		}
+	}
+	return nil
+}
+
+func (s *Store) loadProject(path string) (*models.Project, error) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var project models.Project
+	if err := json.Unmarshal(data, &project); err != nil {
+		return nil, err
+	}
+	return &project, nil
+}
+
+func (s *Store) saveProject(project *models.Project) error {
+	data, err := json.MarshalIndent(project, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.projectsDir, project.ID+".json")
+	return ioutil.WriteFile(path, data, 0644)
 }
 
 // GetTask retrieves a task by ID
@@ -285,6 +337,77 @@ func (s *Store) CanStartTask(taskID string) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// CreateProject creates and saves a new project.
+func (s *Store) CreateProject(project *models.Project) error {
+	name := strings.TrimSpace(project.Name)
+	if name == "" {
+		return fmt.Errorf("project name is required")
+	}
+	if project.ID == "" {
+		project.ID = uuid.New().String()
+	}
+	if project.CreatedAt.IsZero() {
+		project.CreatedAt = time.Now()
+	}
+	project.Name = name
+	project.Description = strings.TrimSpace(project.Description)
+	s.projects[project.ID] = project
+	return s.saveProject(project)
+}
+
+// UpdateProject updates an existing project.
+func (s *Store) UpdateProject(project *models.Project) error {
+	if _, exists := s.projects[project.ID]; !exists {
+		return fmt.Errorf("project not found: %s", project.ID)
+	}
+	name := strings.TrimSpace(project.Name)
+	if name == "" {
+		return fmt.Errorf("project name is required")
+	}
+	project.Name = name
+	project.Description = strings.TrimSpace(project.Description)
+	s.projects[project.ID] = project
+	return s.saveProject(project)
+}
+
+// GetProject returns a project by id.
+func (s *Store) GetProject(id string) (*models.Project, error) {
+	project, exists := s.projects[id]
+	if !exists {
+		return nil, fmt.Errorf("project not found: %s", id)
+	}
+	return project, nil
+}
+
+// DeleteProject removes a project and clears references from tasks.
+func (s *Store) DeleteProject(id string) error {
+	if _, exists := s.projects[id]; !exists {
+		return fmt.Errorf("project not found: %s", id)
+	}
+	path := filepath.Join(s.projectsDir, id+".json")
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	delete(s.projects, id)
+
+	for _, task := range s.tasks {
+		if task.ProjectID == id {
+			task.ProjectID = ""
+			_ = s.saveTask(task)
+		}
+	}
+	return nil
+}
+
+// GetAllProjects returns all projects.
+func (s *Store) GetAllProjects() []*models.Project {
+	projects := make([]*models.Project, 0, len(s.projects))
+	for _, project := range s.projects {
+		projects = append(projects, project)
+	}
+	return projects
 }
 
 func createsCycle(tasks map[string]*models.Task, taskID, depID string) bool {

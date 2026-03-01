@@ -6,28 +6,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ServerConfig stores file-based server settings for the upcoming web/API runtime.
 type ServerConfig struct {
-	ListenAddr   string `json:"listen_addr"`
-	JWTSecret    string `json:"jwt_secret"`
-	TOTPIssuer   string `json:"totp_issuer"`
-	DBPath       string `json:"db_path"`
-	APITokenName string `json:"api_token_name"`
-	CookieSecure bool   `json:"cookie_secure"`
-	CSRFCookie   string `json:"csrf_cookie_name"`
-	NotificationsEnabled      bool   `json:"notifications_enabled"`
-	NotificationCheckSeconds  int    `json:"notification_check_seconds"`
-	NotificationDryRun        bool   `json:"notification_dry_run"`
-	NotificationEmailTo       string `json:"notification_email_to"`
-	NotificationEmailFrom     string `json:"notification_email_from"`
-	NotificationSMTPHost      string `json:"notification_smtp_host"`
-	NotificationSMTPPort      int    `json:"notification_smtp_port"`
-	NotificationSMTPUsername  string `json:"notification_smtp_username"`
-	NotificationSMTPPassword  string `json:"notification_smtp_password"`
+	ListenAddr               string `json:"listen_addr"`
+	JWTSecret                string `json:"jwt_secret"`
+	TOTPIssuer               string `json:"totp_issuer"`
+	DBPath                   string `json:"db_path"`
+	APITokenName             string `json:"api_token_name"`
+	CookieSecure             bool   `json:"cookie_secure"`
+	CSRFCookie               string `json:"csrf_cookie_name"`
+	NotificationsEnabled     bool   `json:"notifications_enabled"`
+	NotificationCheckSeconds int    `json:"notification_check_seconds"`
+	NotificationDryRun       bool   `json:"notification_dry_run"`
+	NotificationEmailTo      string `json:"notification_email_to"`
+	NotificationEmailFrom    string `json:"notification_email_from"`
+	NotificationSMTPHost     string `json:"notification_smtp_host"`
+	NotificationSMTPPort     int    `json:"notification_smtp_port"`
+	NotificationSMTPUsername string `json:"notification_smtp_username"`
+	NotificationSMTPPassword string `json:"notification_smtp_password"`
 }
 
 // LoadServerConfig loads or creates ~/.gtd/server-config.json.
@@ -87,6 +89,10 @@ func LoadServerConfig() (*ServerConfig, error) {
 		cfg.CSRFCookie = defaults.CSRFCookie
 		changed = true
 	}
+	if !cfg.CookieSecure && !isLoopbackListenAddr(cfg.ListenAddr) {
+		cfg.CookieSecure = true
+		changed = true
+	}
 	if cfg.NotificationCheckSeconds <= 0 {
 		cfg.NotificationCheckSeconds = defaults.NotificationCheckSeconds
 		changed = true
@@ -104,6 +110,7 @@ func LoadServerConfig() (*ServerConfig, error) {
 			return nil, err
 		}
 	}
+	_ = os.Chmod(configPath, 0o600)
 	return &cfg, nil
 }
 
@@ -114,7 +121,10 @@ func SaveServerConfig(cfg *ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(path, data, 0o644)
+	if err := ioutil.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func defaultServerConfig(dataPath string) (*ServerConfig, error) {
@@ -123,13 +133,13 @@ func defaultServerConfig(dataPath string) (*ServerConfig, error) {
 		return nil, err
 	}
 	return &ServerConfig{
-		ListenAddr:   "127.0.0.1:8080",
-		JWTSecret:    secret,
-		TOTPIssuer:   "GTD@eatbrainz.com",
-		DBPath:       filepath.Join(dataPath, "gtd.db"),
-		APITokenName: "gtd_api_key",
-		CookieSecure: false,
-		CSRFCookie:   "gtd_csrf",
+		ListenAddr:               "127.0.0.1:8080",
+		JWTSecret:                secret,
+		TOTPIssuer:               "GTD@eatbrainz.com",
+		DBPath:                   filepath.Join(dataPath, "gtd.db"),
+		APITokenName:             "gtd_api_key",
+		CookieSecure:             false,
+		CSRFCookie:               "gtd_csrf",
 		NotificationsEnabled:     false,
 		NotificationCheckSeconds: 300,
 		NotificationDryRun:       true,
@@ -150,3 +160,17 @@ func generateSecret() (string, error) {
 	return base64.StdEncoding.EncodeToString(buf), nil
 }
 
+func isLoopbackListenAddr(addr string) bool {
+	host := strings.TrimSpace(addr)
+	if strings.Contains(host, ":") {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}

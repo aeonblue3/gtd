@@ -5,11 +5,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"net/http"
+	"time"
 
+	"github.com/skip2/go-qrcode"
+	"golang.org/x/term"
 	"gtd/internal/api"
 	"gtd/internal/api/handlers"
 	"gtd/internal/auth"
@@ -17,8 +20,6 @@ import (
 	"gtd/internal/database"
 	"gtd/internal/notify"
 	"gtd/internal/storage"
-	"github.com/skip2/go-qrcode"
-	"golang.org/x/term"
 )
 
 // Server starts the next-generation authenticated API skeleton.
@@ -74,7 +75,15 @@ func Server(args []string) error {
 	notifyAdapter := notificationAdapter{cfg: cfg, service: notifier}
 	srv := api.NewServer(store, cfg, validator, sessionAdapter{svc: svc}, notifyAdapter, notifyAdapter)
 	fmt.Printf("Serving GTD API skeleton at http://%s\n", cfg.ListenAddr)
-	return http.ListenAndServe(cfg.ListenAddr, srv.Handler())
+	httpServer := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	return httpServer.ListenAndServe()
 }
 
 func runServerSetup(cfg *config.ServerConfig, svc *auth.Service) error {
@@ -154,7 +163,7 @@ func promptPassword(label string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(bytes)), nil
+	return string(bytes), nil
 }
 
 type sessionAdapter struct {
@@ -377,4 +386,3 @@ func validateNotificationUpdate(cfg handlers.NotificationConfig) error {
 	}
 	return nil
 }
-

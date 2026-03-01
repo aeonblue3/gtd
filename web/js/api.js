@@ -7,9 +7,14 @@ export function setCSRFToken(token) {
 }
 
 export async function apiFetch(path, options = {}) {
+  const csrfRetried = !!options.__csrfRetried;
   const method = (options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
   const isWrite = !["GET", "HEAD", "OPTIONS"].includes(method);
+
+  if (isWrite && !headers.has("X-CSRF-Token")) {
+    await ensureCSRFToken();
+  }
 
   if (options.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -29,6 +34,11 @@ export async function apiFetch(path, options = {}) {
   const data = text ? safeParseJSON(text) : null;
 
   if (!res.ok) {
+    if (isWrite && isCSRFError(res.status, data) && !csrfRetried) {
+      // If the cookie/token pair drifted (e.g. after session bootstrap), refresh once.
+      await forceRefreshCSRFToken();
+      return apiFetch(path, { ...options, __csrfRetried: true });
+    }
     const message = data && data.error ? data.error : `Request failed (${res.status})`;
     const err = new Error(message);
     err.status = res.status;
@@ -45,6 +55,34 @@ function safeParseJSON(text) {
   } catch {
     return null;
   }
+}
+
+async function ensureCSRFToken() {
+  if (csrfToken) {
+    return;
+  }
+  await forceRefreshCSRFToken();
+}
+
+async function forceRefreshCSRFToken() {
+  const res = await fetch(`${API_BASE}/auth/csrf`, {
+    method: "GET",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    return;
+  }
+  const text = await res.text();
+  const data = text ? safeParseJSON(text) : null;
+  csrfToken = data && data.csrf_token ? data.csrf_token : "";
+}
+
+function isCSRFError(status, data) {
+  if (status !== 403) {
+    return false;
+  }
+  const msg = data && data.error ? String(data.error).toLowerCase() : "";
+  return msg.includes("csrf");
 }
 
 export async function fetchStatus() {
@@ -96,5 +134,46 @@ export async function fetchToday() {
 
 export async function fetchReview() {
   return apiFetch("/review");
+}
+
+export async function fetchProjects() {
+  return apiFetch("/projects");
+}
+
+export async function createProject(input) {
+  return apiFetch("/projects", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateProject(projectID, input) {
+  return apiFetch(`/projects/${encodeURIComponent(projectID)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteProject(projectID) {
+  return apiFetch(`/projects/${encodeURIComponent(projectID)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function fetchNotificationConfig() {
+  return apiFetch("/notifications/config");
+}
+
+export async function updateNotificationConfig(input) {
+  return apiFetch("/notifications/config", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function runNotificationsNow() {
+  return apiFetch("/notifications/run-now", {
+    method: "POST",
+  });
 }
 

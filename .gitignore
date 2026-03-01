@@ -1,1 +1,10 @@
 .DS_Store
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+credentials
+totp-setup.png
+*.log
+coverage.out

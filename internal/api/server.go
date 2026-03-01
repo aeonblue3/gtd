@@ -39,6 +39,8 @@ func NewServer(
 
 	r := chi.NewRouter()
 	r.Use(apimw.Logging)
+	r.Use(apimw.SecurityHeaders)
+	r.Use(apimw.BodyLimit(1 << 20))
 
 	var keyManager handlers.APIKeyManager
 	if km, ok := validator.(handlers.APIKeyManager); ok {
@@ -62,6 +64,7 @@ func NewServer(
 		CookieSecure:    cfg.CookieSecure,
 	}
 	tasksHandler := &handlers.TasksHandler{Store: store}
+	projectsHandler := &handlers.ProjectsHandler{Store: store}
 	utilHandler := &handlers.UtilityHandler{Store: store}
 	notifyHandler := &handlers.NotificationsHandler{
 		Runner: notificationRunner,
@@ -80,9 +83,9 @@ func NewServer(
 	registerAPIRoutes := func(r chi.Router) {
 		// Login has stricter limits than general authenticated endpoints.
 		r.With(apimw.LoginRateLimit()).Post("/auth/login", authHandler.Login)
+		r.With(apimw.SetupMFARateLimit()).Post("/auth/setup-mfa", authHandler.SetupMFA)
+		r.With(apimw.VerifyMFARateLimit()).Post("/auth/verify-mfa", authHandler.VerifyMFA)
 		r.Post("/auth/refresh", authHandler.Refresh)
-		r.Post("/auth/setup-mfa", authHandler.SetupMFA)
-		r.Post("/auth/verify-mfa", authHandler.VerifyMFA)
 
 		r.Group(func(r chi.Router) {
 			r.Use(apimw.AuthRateLimit())
@@ -97,6 +100,7 @@ func NewServer(
 			r.Delete("/auth/sessions/all", authHandler.RevokeAll)
 
 			r.Route("/tasks", tasksHandler.Routes)
+			r.Route("/projects", projectsHandler.Routes)
 
 			r.Get("/inbox", utilHandler.Inbox)
 			r.Get("/today", utilHandler.Today)
@@ -119,4 +123,3 @@ func NewServer(
 
 // Handler exposes the configured router.
 func (s *Server) Handler() http.Handler { return s.router }
-

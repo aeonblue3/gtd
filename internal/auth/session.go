@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Session is an API-safe view of an auth session.
@@ -45,13 +47,14 @@ func (s *SessionService) CreateSession(ctx context.Context, userID string, acces
 	if err != nil {
 		return nil, err
 	}
-	id := fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	id := uuid.NewString()
 	expiresAt := time.Now().Add(accessTTL).Unix()
+	refreshExpiresAt := time.Now().Add(refreshTTL).Unix()
 	createdAt := time.Now().Unix()
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO auth_sessions (id, user_id, access_token, refresh_token, expires_at, created_at, revoked)
-VALUES (?, ?, ?, ?, ?, ?, 0)`,
-		id, userID, accessToken, refreshToken, expiresAt, createdAt)
+INSERT INTO auth_sessions (id, user_id, access_token, refresh_token, expires_at, refresh_expires_at, created_at, revoked)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+		id, userID, accessToken, refreshToken, expiresAt, refreshExpiresAt, createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -119,7 +122,11 @@ func (s *SessionService) RotateSessionByAccessToken(ctx context.Context, token s
 // RotateSessionByRefreshToken rotates session tokens using a refresh token.
 func (s *SessionService) RotateSessionByRefreshToken(ctx context.Context, refreshToken string, accessTTL, refreshTTL time.Duration) (*SessionTokens, string, error) {
 	_, _ = s.PruneExpiredSessions(ctx)
-	row := s.db.QueryRowContext(ctx, `SELECT id, user_id FROM auth_sessions WHERE refresh_token = ? AND revoked = 0 LIMIT 1`, refreshToken)
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, user_id
+FROM auth_sessions
+WHERE refresh_token = ? AND revoked = 0 AND refresh_expires_at > ?
+LIMIT 1`, refreshToken, time.Now().Unix())
 	var oldID, userID string
 	if err := row.Scan(&oldID, &userID); err != nil {
 		if err == sql.ErrNoRows {
@@ -195,7 +202,7 @@ func (s *SessionService) RevokeAllSessions(ctx context.Context) (int64, error) {
 
 // PruneExpiredSessions deletes sessions whose access lifetime has expired.
 func (s *SessionService) PruneExpiredSessions(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM auth_sessions WHERE expires_at <= ?`, time.Now().Unix())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM auth_sessions WHERE expires_at <= ? AND (refresh_expires_at IS NULL OR refresh_expires_at <= ?)`, time.Now().Unix(), time.Now().Unix())
 	if err != nil {
 		return 0, fmt.Errorf("prune expired sessions: %w", err)
 	}
@@ -205,4 +212,3 @@ func (s *SessionService) PruneExpiredSessions(ctx context.Context) (int64, error
 	}
 	return n, nil
 }
-

@@ -1,4 +1,16 @@
-import { completeTask, createTask, fetchReview, fetchTasks, fetchToday, searchTasks, updateTask } from "./api.js";
+import {
+  completeTask,
+  createProject,
+  createTask,
+  deleteProject,
+  fetchProjects,
+  fetchReview,
+  fetchTasks,
+  fetchToday,
+  searchTasks,
+  updateProject,
+  updateTask,
+} from "./api.js";
 
 const modal = document.getElementById("task-modal");
 const modalForm = document.getElementById("task-modal-form");
@@ -13,6 +25,8 @@ const modalDescription = document.getElementById("task-modal-description");
 const modalNotes = document.getElementById("task-modal-notes");
 const modalContexts = document.getElementById("task-modal-contexts");
 const modalTags = document.getElementById("task-modal-tags");
+const modalProject = document.getElementById("task-modal-project");
+const modalLocation = document.getElementById("task-modal-location");
 const toastRegion = document.getElementById("toast-region");
 
 let modalOnSaved = null;
@@ -20,11 +34,13 @@ let modalBound = false;
 let taskSearchDebounce = null;
 let tasksRenderBusy = false;
 const PENDING_LABEL = "Saving...";
+let projectsCache = [];
 const tasksViewState = {
   q: "",
   status: "",
   priority: "",
   context: "",
+  projectId: "",
 };
 
 export async function renderTasks(root) {
@@ -32,6 +48,7 @@ export async function renderTasks(root) {
     return;
   }
   tasksRenderBusy = true;
+  await refreshProjects();
   root.innerHTML = "";
   root.appendChild(sectionTitle("Tasks"));
   root.appendChild(tasksControlPanel(root));
@@ -58,6 +75,7 @@ export async function renderTasks(root) {
 }
 
 export async function renderInbox(root) {
+  await refreshProjects();
   const tasks = await fetchTasks({ status: "inbox" });
   root.innerHTML = "";
   root.appendChild(sectionTitle("Inbox"));
@@ -67,6 +85,7 @@ export async function renderInbox(root) {
 }
 
 export async function renderToday(root) {
+  await refreshProjects();
   const tasks = await fetchToday();
   root.innerHTML = "";
   root.appendChild(sectionTitle("Today"));
@@ -76,13 +95,24 @@ export async function renderToday(root) {
 }
 
 export async function renderReview(root) {
+  await refreshProjects();
   const data = await fetchReview();
   root.innerHTML = "";
   root.appendChild(sectionTitle("Review"));
-  const pre = document.createElement("pre");
-  pre.textContent = JSON.stringify(data, null, 2);
-  pre.className = "muted";
-  root.appendChild(pre);
+  root.appendChild(renderReviewSummary(data.summary || {}));
+  const sections = data.sections || {};
+  root.appendChild(renderReviewSection("Overdue", sections.overdue, root, "No overdue tasks."));
+  root.appendChild(renderReviewSection("Due Today", sections.due_today, root, "No tasks due today."));
+  root.appendChild(renderReviewSection("Stale Waiting", sections.stale_waiting, root, "No stale waiting tasks."));
+  root.appendChild(renderReviewSection("Done Recently", sections.done_recent, root, "No recently completed tasks."));
+}
+
+export async function renderProjects(root) {
+  await refreshProjects();
+  root.innerHTML = "";
+  root.appendChild(sectionTitle("Projects"));
+  root.appendChild(projectCreateForm(root));
+  root.appendChild(projectList(root));
 }
 
 function taskCard(task, onChanged) {
@@ -117,7 +147,18 @@ function taskCard(task, onChanged) {
   const meta = document.createElement("p");
   meta.className = "muted";
   meta.style.margin = "0";
-  meta.textContent = `${task.status || "unknown"} • ${task.priority || "none"}${task.dueDate ? ` • due ${task.dueDate}` : ""}`;
+  const bits = [task.status || "unknown", task.priority || "none"];
+  const projectName = projectNameForTask(task);
+  if (projectName) {
+    bits.push(`project ${projectName}`);
+  }
+  if (task.location) {
+    bits.push(`@ ${task.location}`);
+  }
+  if (task.dueDate) {
+    bits.push(`due ${new Date(task.dueDate).toLocaleDateString()}`);
+  }
+  meta.textContent = bits.join(" • ");
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
@@ -320,6 +361,20 @@ function tasksControlPanel(root) {
     renderTasks(root).catch((err) => showToast(err.message || "Filter failed", true));
   });
 
+  const project = document.createElement("select");
+  project.innerHTML = `<option value="">Project: all</option>`;
+  for (const p of projectsCache) {
+    const option = document.createElement("option");
+    option.value = p.id;
+    option.textContent = p.name;
+    project.appendChild(option);
+  }
+  project.value = tasksViewState.projectId;
+  project.addEventListener("change", () => {
+    tasksViewState.projectId = project.value;
+    renderTasks(root).catch((err) => showToast(err.message || "Filter failed", true));
+  });
+
   const clearBtn = document.createElement("button");
   clearBtn.className = "btn";
   clearBtn.type = "button";
@@ -329,6 +384,7 @@ function tasksControlPanel(root) {
     tasksViewState.status = "";
     tasksViewState.priority = "";
     tasksViewState.context = "";
+    tasksViewState.projectId = "";
     renderTasks(root).catch((err) => showToast(err.message || "Could not reset filters", true));
   });
 
@@ -336,18 +392,20 @@ function tasksControlPanel(root) {
   grid.appendChild(status);
   grid.appendChild(priority);
   grid.appendChild(context);
+  grid.appendChild(project);
   panel.appendChild(grid);
   panel.appendChild(clearBtn);
   return panel;
 }
 
 async function fetchTasksForView() {
-  const { q, status, priority, context } = tasksViewState;
+  const { q, status, priority, context, projectId } = tasksViewState;
   if (!q) {
     return fetchTasks(compact({
       status,
       priority,
       context,
+      project_id: projectId,
     }));
   }
 
@@ -364,6 +422,9 @@ async function fetchTasksForView() {
       if (!contexts.includes(context)) {
         return false;
       }
+    }
+    if (projectId && (task.projectId || "") !== projectId) {
+      return false;
     }
     return true;
   });
@@ -398,6 +459,10 @@ function addTaskForm(onAdded) {
   context.type = "text";
   context.placeholder = "Context (optional)";
 
+  const location = document.createElement("input");
+  location.type = "text";
+  location.placeholder = "Location (optional)";
+
   const row = document.createElement("div");
   row.style.display = "flex";
   row.style.gap = "8px";
@@ -419,8 +484,18 @@ function addTaskForm(onAdded) {
     <option value="someday">Status: someday</option>
   `;
 
+  const project = document.createElement("select");
+  project.innerHTML = `<option value="">Project: none</option>`;
+  for (const p of projectsCache) {
+    const option = document.createElement("option");
+    option.value = p.id;
+    option.textContent = p.name;
+    project.appendChild(option);
+  }
+
   row.appendChild(priority);
   row.appendChild(status);
+  row.appendChild(project);
 
   const submit = document.createElement("button");
   submit.type = "submit";
@@ -435,6 +510,7 @@ function addTaskForm(onAdded) {
   form.appendChild(heading);
   form.appendChild(title);
   form.appendChild(context);
+  form.appendChild(location);
   form.appendChild(row);
   form.appendChild(submit);
   form.appendChild(feedback);
@@ -448,13 +524,17 @@ function addTaskForm(onAdded) {
       await createTask({
         title: title.value.trim(),
         context: contexts,
+        location: location.value.trim(),
+        projectId: project.value,
         priority: priority.value,
         status: status.value,
       });
       title.value = "";
       context.value = "";
+      location.value = "";
       priority.value = "none";
       status.value = "inbox";
+      project.value = "";
       feedback.textContent = "Task added.";
       showToast("Task added.");
       if (onAdded) {
@@ -484,6 +564,210 @@ function placeholder(text) {
   return p;
 }
 
+async function refreshProjects() {
+  try {
+    const projects = await fetchProjects();
+    projectsCache = Array.isArray(projects) ? projects : [];
+  } catch {
+    projectsCache = [];
+  }
+}
+
+function fillProjectSelect(selectEl, includeNoneOption) {
+  if (!selectEl) {
+    return;
+  }
+  const currentValue = selectEl.value;
+  selectEl.innerHTML = "";
+  if (includeNoneOption) {
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "none";
+    selectEl.appendChild(none);
+  }
+  for (const project of projectsCache) {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = project.name;
+    selectEl.appendChild(option);
+  }
+  if (Array.from(selectEl.options).some((opt) => opt.value === currentValue)) {
+    selectEl.value = currentValue;
+  }
+}
+
+function projectNameForTask(task) {
+  if (!task || !task.projectId) {
+    return "";
+  }
+  const project = projectsCache.find((p) => p.id === task.projectId);
+  return project ? project.name : "";
+}
+
+function renderReviewSummary(summary) {
+  const card = document.createElement("section");
+  card.className = "card summary-grid";
+  const items = [
+    ["Inbox", summary.inbox || 0],
+    ["Actionable", summary.actionable || 0],
+    ["Waiting", summary.waiting || 0],
+    ["Someday", summary.someday || 0],
+    ["Done", summary.done || 0],
+    ["Done This Week", summary.completed_this_week || 0],
+  ];
+  for (const [label, value] of items) {
+    const tile = document.createElement("div");
+    tile.className = "summary-tile";
+    const k = document.createElement("p");
+    k.className = "muted";
+    k.style.margin = "0";
+    k.textContent = label;
+    const v = document.createElement("p");
+    v.className = "summary-value";
+    v.textContent = `${value}`;
+    tile.appendChild(k);
+    tile.appendChild(v);
+    card.appendChild(tile);
+  }
+  return card;
+}
+
+function renderReviewSection(title, section, root, empty) {
+  const card = document.createElement("section");
+  card.className = "card";
+  card.style.padding = "16px";
+  card.style.marginTop = "12px";
+  const h = document.createElement("h3");
+  h.className = "section-title";
+  h.style.marginBottom = "8px";
+  const count = section && typeof section.count === "number" ? section.count : 0;
+  h.textContent = `${title} (${count})`;
+  card.appendChild(h);
+  const tasks = section && Array.isArray(section.tasks) ? section.tasks : [];
+  card.appendChild(renderTaskList(tasks, async () => {
+    await renderReview(root);
+  }, empty));
+  return card;
+}
+
+function projectCreateForm(root) {
+  const form = document.createElement("form");
+  form.className = "stack card";
+  form.style.padding = "16px";
+  form.style.marginBottom = "12px";
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.placeholder = "Project name";
+  name.required = true;
+
+  const desc = document.createElement("input");
+  desc.type = "text";
+  desc.placeholder = "Description (optional)";
+
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "btn btn-primary";
+  submit.textContent = "Create Project";
+
+  form.appendChild(name);
+  form.appendChild(desc);
+  form.appendChild(submit);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    startButtonPending(submit);
+    try {
+      await createProject({
+        name: name.value.trim(),
+        description: desc.value.trim(),
+      });
+      name.value = "";
+      desc.value = "";
+      showToast("Project created.");
+      await renderProjects(root);
+    } catch (err) {
+      showToast(err.message || "Could not create project", true);
+    } finally {
+      stopButtonPending(submit);
+    }
+  });
+  return form;
+}
+
+function projectList(root) {
+  if (!projectsCache.length) {
+    return placeholder("No projects yet.");
+  }
+  const list = document.createElement("div");
+  list.className = "stack";
+  for (const project of projectsCache) {
+    const card = document.createElement("article");
+    card.className = "card";
+    card.style.padding = "16px";
+    const title = document.createElement("h3");
+    title.textContent = project.name;
+    title.style.margin = "0 0 6px 0";
+    const desc = document.createElement("p");
+    desc.className = "muted";
+    desc.textContent = project.description || "No description";
+    desc.style.margin = "0 0 10px 0";
+
+    const actions = document.createElement("div");
+    actions.className = "task-actions";
+    const edit = document.createElement("button");
+    edit.className = "btn";
+    edit.textContent = "Rename";
+    edit.addEventListener("click", async () => {
+      const nextName = window.prompt("Project name", project.name);
+      if (!nextName) {
+        return;
+      }
+      startButtonPending(edit);
+      try {
+        await updateProject(project.id, {
+          name: nextName.trim(),
+          description: project.description || "",
+        });
+        showToast("Project updated.");
+        await renderProjects(root);
+      } catch (err) {
+        showToast(err.message || "Could not update project", true);
+      } finally {
+        stopButtonPending(edit);
+      }
+    });
+
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      const confirmed = window.confirm("Delete project? Tasks will be unassigned.");
+      if (!confirmed) {
+        return;
+      }
+      startButtonPending(del);
+      try {
+        await deleteProject(project.id);
+        showToast("Project deleted.");
+        await renderProjects(root);
+      } catch (err) {
+        showToast(err.message || "Could not delete project", true);
+      } finally {
+        stopButtonPending(del);
+      }
+    });
+
+    actions.appendChild(edit);
+    actions.appendChild(del);
+    card.appendChild(title);
+    card.appendChild(desc);
+    card.appendChild(actions);
+    list.appendChild(card);
+  }
+  return list;
+}
+
 async function quickSetDueDate(task, dayOffset, button, onChanged) {
   try {
     startButtonPending(button);
@@ -510,9 +794,12 @@ function openTaskModal(task, onSaved) {
   bindModalEvents();
   modalOnSaved = onSaved || null;
   modalFeedback.textContent = "";
+  fillProjectSelect(modalProject, true);
   modalTaskID.value = task.id || "";
   modalStatus.value = task.status || "inbox";
   modalPriority.value = task.priority || "none";
+  modalProject.value = task.projectId || "";
+  modalLocation.value = task.location || "";
   modalDueDate.value = toDateInputValue(task.dueDate || task.due_date || "");
   modalDescription.value = task.description || "";
   modalNotes.value = task.notes || "";
@@ -572,6 +859,8 @@ function bindModalEvents() {
     const payload = {
       status: modalStatus.value,
       priority: modalPriority.value,
+      projectId: modalProject.value,
+      location: modalLocation.value,
       description: modalDescription.value,
       notes: modalNotes.value,
       context: contexts,

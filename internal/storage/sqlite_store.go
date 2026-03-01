@@ -48,6 +48,11 @@ func (s *SQLiteStore) AddTask(task *models.Task) error {
 	if task.Recurrence == "" {
 		task.Recurrence = models.RecurrenceNone
 	}
+	task.Location = strings.TrimSpace(task.Location)
+	task.ProjectID = strings.TrimSpace(task.ProjectID)
+	if task.ProjectID != "" && !s.projectExists(task.ProjectID) {
+		return fmt.Errorf("project not found: %s", task.ProjectID)
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -68,6 +73,12 @@ func (s *SQLiteStore) AddTask(task *models.Task) error {
 }
 
 func (s *SQLiteStore) UpdateTask(task *models.Task) error {
+	task.Location = strings.TrimSpace(task.Location)
+	task.ProjectID = strings.TrimSpace(task.ProjectID)
+	if task.ProjectID != "" && !s.projectExists(task.ProjectID) {
+		return fmt.Errorf("project not found: %s", task.ProjectID)
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -88,7 +99,7 @@ func (s *SQLiteStore) UpdateTask(task *models.Task) error {
 
 func (s *SQLiteStore) GetTask(id string) (*models.Task, error) {
 	row := s.db.QueryRow(`
-SELECT id, title, description, contexts, status, priority, due_date, created_at, completed_at, tags, notes, recurrence
+SELECT id, title, description, contexts, project_id, location, status, priority, due_date, created_at, completed_at, tags, notes, recurrence
 FROM tasks
 WHERE id = ?`, id)
 
@@ -302,6 +313,118 @@ WHERE d.task_id = ?`, taskID)
 	return true, rows.Err()
 }
 
+func (s *SQLiteStore) CreateProject(project *models.Project) error {
+	name := strings.TrimSpace(project.Name)
+	if name == "" {
+		return fmt.Errorf("project name is required")
+	}
+	if project.ID == "" {
+		project.ID = uuid.New().String()
+	}
+	if project.CreatedAt.IsZero() {
+		project.CreatedAt = time.Now()
+	}
+	project.Name = name
+	project.Description = strings.TrimSpace(project.Description)
+
+	_, err := s.db.Exec(
+		`INSERT INTO projects (id, name, description, created_at) VALUES (?, ?, ?, ?)`,
+		project.ID, project.Name, project.Description, project.CreatedAt.Unix(),
+	)
+	return err
+}
+
+func (s *SQLiteStore) UpdateProject(project *models.Project) error {
+	name := strings.TrimSpace(project.Name)
+	if name == "" {
+		return fmt.Errorf("project name is required")
+	}
+	project.Name = name
+	project.Description = strings.TrimSpace(project.Description)
+
+	res, err := s.db.Exec(
+		`UPDATE projects SET name = ?, description = ? WHERE id = ?`,
+		project.Name, project.Description, project.ID,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("project not found: %s", project.ID)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetProject(id string) (*models.Project, error) {
+	row := s.db.QueryRow(`SELECT id, name, description, created_at FROM projects WHERE id = ?`, id)
+	var (
+		project       models.Project
+		description   sql.NullString
+		createdAtUnix int64
+	)
+	if err := row.Scan(&project.ID, &project.Name, &description, &createdAtUnix); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("project not found: %s", id)
+		}
+		return nil, err
+	}
+	project.Description = strings.TrimSpace(description.String)
+	project.CreatedAt = time.Unix(createdAtUnix, 0)
+	return &project, nil
+}
+
+func (s *SQLiteStore) DeleteProject(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("project not found: %s", id)
+	}
+	if _, err := tx.Exec(`UPDATE tasks SET project_id = NULL WHERE project_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) GetAllProjects() []*models.Project {
+	rows, err := s.db.Query(`SELECT id, name, description, created_at FROM projects ORDER BY created_at DESC, name ASC`)
+	if err != nil {
+		return []*models.Project{}
+	}
+	defer rows.Close()
+
+	out := make([]*models.Project, 0)
+	for rows.Next() {
+		var (
+			project       models.Project
+			description   sql.NullString
+			createdAtUnix int64
+		)
+		if err := rows.Scan(&project.ID, &project.Name, &description, &createdAtUnix); err != nil {
+			continue
+		}
+		project.Description = strings.TrimSpace(description.String)
+		project.CreatedAt = time.Unix(createdAtUnix, 0)
+		out = append(out, &project)
+	}
+	return out
+}
+
 func (s *SQLiteStore) upsertTaskRow(tx *sql.Tx, task *models.Task, update bool) error {
 	contextsJSON, err := json.Marshal(task.Contexts)
 	if err != nil {
@@ -315,9 +438,9 @@ func (s *SQLiteStore) upsertTaskRow(tx *sql.Tx, task *models.Task, update bool) 
 	if update {
 		res, err := tx.Exec(`
 UPDATE tasks
-SET title = ?, description = ?, contexts = ?, status = ?, priority = ?, due_date = ?, created_at = ?, completed_at = ?, tags = ?, notes = ?, recurrence = ?
+SET title = ?, description = ?, contexts = ?, project_id = ?, location = ?, status = ?, priority = ?, due_date = ?, created_at = ?, completed_at = ?, tags = ?, notes = ?, recurrence = ?
 WHERE id = ?`,
-			task.Title, task.Description, string(contextsJSON), string(task.Status), string(task.Priority),
+			task.Title, task.Description, string(contextsJSON), nullIfEmpty(task.ProjectID), nullIfEmpty(task.Location), string(task.Status), string(task.Priority),
 			timeToUnix(task.DueDate), task.CreatedAt.Unix(), timeToUnix(task.CompletedAt), string(tagsJSON), task.Notes, string(task.Recurrence), task.ID)
 		if err != nil {
 			return err
@@ -333,9 +456,9 @@ WHERE id = ?`,
 	}
 
 	_, err = tx.Exec(`
-INSERT INTO tasks (id, title, description, contexts, status, priority, due_date, created_at, completed_at, tags, notes, recurrence)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.ID, task.Title, task.Description, string(contextsJSON), string(task.Status), string(task.Priority),
+INSERT INTO tasks (id, title, description, contexts, project_id, location, status, priority, due_date, created_at, completed_at, tags, notes, recurrence)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.Title, task.Description, string(contextsJSON), nullIfEmpty(task.ProjectID), nullIfEmpty(task.Location), string(task.Status), string(task.Priority),
 		timeToUnix(task.DueDate), task.CreatedAt.Unix(), timeToUnix(task.CompletedAt), string(tagsJSON), task.Notes, string(task.Recurrence))
 	return err
 }
@@ -449,6 +572,12 @@ func (s *SQLiteStore) taskExists(taskID string) bool {
 	return row.Scan(&one) == nil
 }
 
+func (s *SQLiteStore) projectExists(projectID string) bool {
+	row := s.db.QueryRow(`SELECT 1 FROM projects WHERE id = ? LIMIT 1`, projectID)
+	var one int
+	return row.Scan(&one) == nil
+}
+
 func createsCycleGraph(graph map[string][]string, taskID, depID string) bool {
 	g := map[string][]string{}
 	for k, v := range graph {
@@ -482,15 +611,16 @@ func scanTask(scanner interface {
 	Scan(dest ...any) error
 }) (*models.Task, error) {
 	var (
-		task                    models.Task
-		contextsJSON, tagsJSON  string
-		dueDate, completedAt    sql.NullInt64
-		recurrence, status      string
-		priority                string
-		createdAtUnix           int64
+		task                   models.Task
+		contextsJSON, tagsJSON string
+		dueDate, completedAt   sql.NullInt64
+		recurrence, status     string
+		priority               string
+		projectID, location    sql.NullString
+		createdAtUnix          int64
 	)
 	if err := scanner.Scan(
-		&task.ID, &task.Title, &task.Description, &contextsJSON, &status, &priority,
+		&task.ID, &task.Title, &task.Description, &contextsJSON, &projectID, &location, &status, &priority,
 		&dueDate, &createdAtUnix, &completedAt, &tagsJSON, &task.Notes, &recurrence,
 	); err != nil {
 		return nil, err
@@ -504,6 +634,8 @@ func scanTask(scanner interface {
 	task.Tags = []string{}
 	task.Subtasks = []models.Subtask{}
 	task.LinkedTasks = []string{}
+	task.ProjectID = strings.TrimSpace(projectID.String)
+	task.Location = strings.TrimSpace(location.String)
 
 	if err := json.Unmarshal([]byte(contextsJSON), &task.Contexts); err != nil {
 		return nil, err
@@ -529,3 +661,10 @@ func timeToUnix(t *time.Time) any {
 	return t.Unix()
 }
 
+func nullIfEmpty(v string) any {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return nil
+	}
+	return s
+}

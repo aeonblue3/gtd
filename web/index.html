@@ -19,6 +19,7 @@
           <button data-view="inbox" class="nav-btn">Inbox</button>
           <button data-view="today" class="nav-btn">Today</button>
           <button data-view="review" class="nav-btn">Review</button>
+          <button data-view="projects" class="nav-btn">Projects</button>
           <button data-view="settings" class="nav-btn">Settings</button>
         </nav>
       </header>
@@ -56,6 +57,9 @@
         </section>
         <section id="review-view" class="card view" data-view-panel="review">
           <div id="review-root"></div>
+        </section>
+        <section id="projects-view" class="card view" data-view-panel="projects">
+          <div id="projects-root"></div>
         </section>
         <section id="settings-view" class="card view" data-view-panel="settings">
           <div id="settings-root"></div>
@@ -102,6 +106,16 @@
             Due Date
             <input id="task-modal-due" type="date" />
           </label>
+          <div class="modal-grid">
+            <label>
+              Project
+              <select id="task-modal-project"></select>
+            </label>
+            <label>
+              Location
+              <input id="task-modal-location" type="text" />
+            </label>
+          </div>
           <label>
             Description
             <textarea id="task-modal-description" rows="3"></textarea>

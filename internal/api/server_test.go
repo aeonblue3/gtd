@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
 	"gtd/internal/api/handlers"
 	"gtd/internal/auth"
 	"gtd/internal/config"
 	"gtd/internal/database"
 	"gtd/internal/storage"
-	"github.com/pquerna/otp/totp"
 )
 
 type allowAllValidator struct{}
@@ -602,6 +602,7 @@ func TestPasswordTotpSetupAndLogin(t *testing.T) {
 	}
 
 	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"email":"me@example.com","password":"strong-pass","totp_code":"`+code+`"}`))
+	loginReq.Header.Set("X-Return-Tokens", "true")
 	loginRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(loginRec, loginReq)
 	if loginRec.Code != http.StatusOK {
@@ -621,6 +622,7 @@ func TestPasswordTotpSetupAndLogin(t *testing.T) {
 	}
 
 	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", bytes.NewBufferString(`{"refresh_token":"`+refresh+`"}`))
+	refreshReq.Header.Set("X-Return-Tokens", "true")
 	refreshRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(refreshRec, refreshReq)
 	if refreshRec.Code != http.StatusOK {
@@ -771,4 +773,3 @@ func (a sessionAdapterForTest) RotateSessionByRefreshToken(ctx context.Context, 
 		ExpiresAt:    next.ExpiresAt,
 	}, oldID, nil
 }
-

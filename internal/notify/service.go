@@ -2,12 +2,13 @@ package notify
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"log"
 	"net/smtp"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"gtd/internal/config"
@@ -15,8 +16,8 @@ import (
 )
 
 const (
-	reminderDue24h = "due_24h"
-	reminderDue1h  = "due_1h"
+	reminderDue24h  = "due_24h"
+	reminderDue1h   = "due_1h"
 	reminderOverdue = "overdue"
 )
 
@@ -65,12 +66,12 @@ type Service struct {
 
 // RunStats summarizes a single reminder scan pass.
 type RunStats struct {
-	Scanned  int `json:"scanned"`
+	Scanned   int `json:"scanned"`
 	Attempted int `json:"attempted"`
-	Sent     int `json:"sent"`
-	DryRun   int `json:"dry_run"`
-	Failed   int `json:"failed"`
-	Skipped  int `json:"skipped"`
+	Sent      int `json:"sent"`
+	DryRun    int `json:"dry_run"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"`
 }
 
 // NewService builds a notification service.
@@ -278,11 +279,61 @@ func (s smtpSender) Send(to, subject, body string) error {
 	msg.WriteString("\r\n")
 	msg.WriteString(body)
 
-	var auth smtp.Auth
-	if s.username != "" {
-		auth = smtp.PlainAuth("", s.username, s.password, s.host)
+	tlsCfg := &tls.Config{
+		ServerName: s.host,
+		MinVersion: tls.VersionTLS12,
 	}
-	return smtp.SendMail(addr, auth, s.from, []string{to}, []byte(msg.String()))
+	var (
+		client *smtp.Client
+		err    error
+	)
+	if s.port == 465 {
+		conn, dialErr := tls.Dial("tcp", addr, tlsCfg)
+		if dialErr != nil {
+			return dialErr
+		}
+		client, err = smtp.NewClient(conn, s.host)
+	} else {
+		client, err = smtp.Dial(addr)
+		if err == nil {
+			if ok, _ := client.Extension("STARTTLS"); !ok {
+				_ = client.Close()
+				return fmt.Errorf("smtp server does not support STARTTLS")
+			}
+			if err = client.StartTLS(tlsCfg); err != nil {
+				_ = client.Close()
+				return fmt.Errorf("starttls failed: %w", err)
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if s.username != "" {
+		auth := smtp.PlainAuth("", s.username, s.password, s.host)
+		if err := client.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err := client.Mail(s.from); err != nil {
+		return err
+	}
+	if err := client.Rcpt(to); err != nil {
+		return err
+	}
+	w, err := client.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(msg.String())); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return client.Quit()
 }
 
 // SnapshotConfig returns the currently active notification config.
@@ -337,4 +388,3 @@ func (s *Service) checkEvery() time.Duration {
 	}
 	return cfg.CheckEvery
 }
-

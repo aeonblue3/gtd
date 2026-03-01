@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -109,14 +110,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	setAuthCookie(w, "refresh_token", result.RefreshToken, h.CookieSecure)
 	csrfToken, err := issueCSRFCookie(w, h.CSRFCookieName, h.CookieSecure)
 	if err == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"session_id":    result.SessionID,
-			"user_id":       result.UserID,
-			"access_token":  result.AccessToken,
-			"refresh_token": result.RefreshToken,
-			"expires_at":    result.ExpiresAt,
-			"csrf_token":    csrfToken,
-		})
+		resp := map[string]any{
+			"session_id": result.SessionID,
+			"user_id":    result.UserID,
+			"expires_at": result.ExpiresAt,
+			"csrf_token": csrfToken,
+		}
+		if shouldReturnSessionTokens(r) {
+			resp["access_token"] = result.AccessToken
+			resp["refresh_token"] = result.RefreshToken
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	// If CSRF cookie generation fails, still return successful login response.
@@ -147,8 +151,8 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 			h.recordEvent(r, "logout_success", map[string]any{"auth_type": "session", "revoked_session_id": revokedID})
 			clearAuthCookies(w, h.TokenCookieName, h.CSRFCookieName, h.CookieSecure)
 			writeJSON(w, http.StatusOK, map[string]any{
-				"logged_out":          true,
-				"revoked_session_id":  revokedID,
+				"logged_out":         true,
+				"revoked_session_id": revokedID,
 			})
 			return
 		}
@@ -190,15 +194,18 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 			setAuthCookie(w, "access_token", next.AccessToken, h.CookieSecure)
 			setAuthCookie(w, "refresh_token", next.RefreshToken, h.CookieSecure)
 			csrfToken, _ := issueCSRFCookie(w, h.CSRFCookieName, h.CookieSecure)
-			writeJSON(w, http.StatusOK, map[string]any{
+			resp := map[string]any{
 				"session_id":         next.SessionID,
 				"user_id":            next.UserID,
-				"access_token":       next.AccessToken,
-				"refresh_token":      next.RefreshToken,
 				"expires_at":         next.ExpiresAt,
 				"revoked_session_id": oldID,
 				"csrf_token":         csrfToken,
-			})
+			}
+			if shouldReturnSessionTokens(r) {
+				resp["access_token"] = next.AccessToken
+				resp["refresh_token"] = next.RefreshToken
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
@@ -250,15 +257,18 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 			setAuthCookie(w, "access_token", next.AccessToken, h.CookieSecure)
 			setAuthCookie(w, "refresh_token", next.RefreshToken, h.CookieSecure)
 			csrfToken, _ := issueCSRFCookie(w, h.CSRFCookieName, h.CookieSecure)
-			writeJSON(w, http.StatusOK, map[string]any{
+			resp := map[string]any{
 				"session_id":         next.SessionID,
 				"user_id":            next.UserID,
-				"access_token":       next.AccessToken,
-				"refresh_token":      next.RefreshToken,
 				"expires_at":         next.ExpiresAt,
 				"revoked_session_id": oldID,
 				"csrf_token":         csrfToken,
-			})
+			}
+			if shouldReturnSessionTokens(r) {
+				resp["access_token"] = next.AccessToken
+				resp["refresh_token"] = next.RefreshToken
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
@@ -496,6 +506,13 @@ func hasBearerAuth(r *http.Request) bool {
 	return parseBearerToken(r.Header.Get("Authorization")) != ""
 }
 
+func shouldReturnSessionTokens(r *http.Request) bool {
+	if hasBearerAuth(r) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Return-Tokens")), "true")
+}
+
 func validateCSRFRequest(r *http.Request, csrfCookie string) error {
 	if strings.TrimSpace(csrfCookie) == "" {
 		csrfCookie = "gtd_csrf"
@@ -527,13 +544,9 @@ func (h *AuthHandler) recordEvent(r *http.Request, eventType string, metadata ma
 }
 
 func clientIP(r *http.Request) string {
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		return strings.TrimSpace(parts[0])
-	}
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
 	}
 	return strings.TrimSpace(r.RemoteAddr)
 }
-

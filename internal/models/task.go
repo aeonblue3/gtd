@@ -16,6 +16,8 @@ type Task struct {
 	Title       string     `json:"title"`
 	Description string     `json:"description"`
 	Contexts    []string   `json:"context"`
+	ProjectID   string     `json:"projectId,omitempty"`
+	Location    string     `json:"location,omitempty"`
 	Status      Status     `json:"status"`
 	Priority    Priority   `json:"priority"`
 	DueDate     *time.Time `json:"dueDate,omitempty"`
@@ -26,6 +28,14 @@ type Task struct {
 	LinkedTasks []string   `json:"linkedTasks"`
 	Subtasks    []Subtask  `json:"subtasks"`
 	Recurrence  Recurrence `json:"recurrence"`
+}
+
+// Project represents a named grouping for tasks.
+type Project struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 // Status represents the current state of a task
@@ -116,6 +126,8 @@ func (t *Task) NextRecurringInstance() *Task {
 	next := NewTask(t.Title)
 	next.Description = t.Description
 	next.Contexts = append([]string{}, t.Contexts...)
+	next.ProjectID = t.ProjectID
+	next.Location = t.Location
 	next.Status = StatusActionable
 	next.Priority = t.Priority
 	next.Tags = append([]string{}, t.Tags...)
