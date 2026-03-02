@@ -41,6 +41,7 @@ const tasksViewState = {
   priority: "",
   context: "",
   projectId: "",
+  filtersOpen: false,
 };
 
 export async function renderTasks(root) {
@@ -52,9 +53,7 @@ export async function renderTasks(root) {
   root.innerHTML = "";
   root.appendChild(sectionTitle("Tasks"));
   root.appendChild(tasksControlPanel(root));
-  root.appendChild(addTaskForm(async () => {
-    await renderTasks(root);
-  }));
+  root.appendChild(quickAddFab(root));
 
   const loading = loadingIndicator("Loading tasks...");
   root.appendChild(loading);
@@ -306,8 +305,8 @@ function tasksControlPanel(root) {
   const panel = document.createElement("section");
   panel.className = "card task-controls";
 
-  const grid = document.createElement("div");
-  grid.className = "task-controls-grid";
+  const row = document.createElement("div");
+  row.className = "task-controls-row";
 
   const search = document.createElement("input");
   search.type = "search";
@@ -322,6 +321,27 @@ function tasksControlPanel(root) {
       renderTasks(root).catch((err) => showToast(err.message || "Search failed", true));
     }, 220);
   });
+
+  const filtersToggle = document.createElement("button");
+  filtersToggle.className = "btn";
+  filtersToggle.type = "button";
+  const activeFilters = activeFiltersCount();
+  filtersToggle.textContent = activeFilters > 0 ? `Filters (${activeFilters})` : "Filters";
+  filtersToggle.addEventListener("click", () => {
+    tasksViewState.filtersOpen = !tasksViewState.filtersOpen;
+    renderTasks(root).catch((err) => showToast(err.message || "Could not open filters", true));
+  });
+
+  row.appendChild(search);
+  row.appendChild(filtersToggle);
+  panel.appendChild(row);
+
+  if (!tasksViewState.filtersOpen) {
+    return panel;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "task-controls-grid task-filters-advanced";
 
   const status = document.createElement("select");
   status.innerHTML = `
@@ -385,10 +405,10 @@ function tasksControlPanel(root) {
     tasksViewState.priority = "";
     tasksViewState.context = "";
     tasksViewState.projectId = "";
+    tasksViewState.filtersOpen = false;
     renderTasks(root).catch((err) => showToast(err.message || "Could not reset filters", true));
   });
 
-  grid.appendChild(search);
   grid.appendChild(status);
   grid.appendChild(priority);
   grid.appendChild(context);
@@ -440,15 +460,84 @@ function compact(obj) {
   return out;
 }
 
-function addTaskForm(onAdded) {
-  const form = document.createElement("form");
-  form.className = "stack card";
-  form.style.padding = "16px";
-  form.style.marginBottom = "12px";
+function activeFiltersCount() {
+  let count = 0;
+  if (tasksViewState.status) {
+    count += 1;
+  }
+  if (tasksViewState.priority) {
+    count += 1;
+  }
+  if (tasksViewState.context) {
+    count += 1;
+  }
+  if (tasksViewState.projectId) {
+    count += 1;
+  }
+  return count;
+}
 
-  const heading = document.createElement("h3");
-  heading.textContent = "Quick Add";
-  heading.style.margin = "0";
+function quickAddFab(root) {
+  const wrap = document.createElement("div");
+
+  const fab = document.createElement("button");
+  fab.type = "button";
+  fab.className = "fab-add";
+  fab.title = "Quick add task";
+  fab.setAttribute("aria-label", "Quick add task");
+  fab.textContent = "+";
+
+  const overlay = document.createElement("div");
+  overlay.className = "quick-add-overlay";
+  overlay.hidden = true;
+
+  const modal = document.createElement("section");
+  modal.className = "quick-add-modal card stack";
+
+  const header = document.createElement("div");
+  header.className = "modal-header";
+  const title = document.createElement("h3");
+  title.textContent = "Quick Add";
+  title.style.margin = "0";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn";
+  close.textContent = "Close";
+  close.addEventListener("click", () => {
+    overlay.hidden = true;
+  });
+  header.appendChild(title);
+  header.appendChild(close);
+
+  const form = addTaskForm(async () => {
+    overlay.hidden = true;
+    await renderTasks(root);
+  }, { asModal: true });
+
+  modal.appendChild(header);
+  modal.appendChild(form);
+  overlay.appendChild(modal);
+
+  fab.addEventListener("click", () => {
+    overlay.hidden = false;
+  });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.hidden = true;
+    }
+  });
+
+  wrap.appendChild(fab);
+  wrap.appendChild(overlay);
+  return wrap;
+}
+
+function addTaskForm(onAdded, options = {}) {
+  const asModal = !!options.asModal;
+  const form = document.createElement("form");
+  form.className = asModal ? "stack" : "stack card";
+  form.style.padding = asModal ? "0" : "16px";
+  form.style.marginBottom = asModal ? "0" : "12px";
 
   const title = document.createElement("input");
   title.type = "text";
@@ -507,7 +596,6 @@ function addTaskForm(onAdded) {
   feedback.style.margin = "0";
   feedback.style.minHeight = "1rem";
 
-  form.appendChild(heading);
   form.appendChild(title);
   form.appendChild(context);
   form.appendChild(location);

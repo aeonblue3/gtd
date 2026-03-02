@@ -7,16 +7,19 @@ const state = {
   authenticated: false,
   currentView: "tasks",
   rendering: false,
+  mobileNavOpen: false,
 };
 
 const panels = Array.from(document.querySelectorAll("[data-view-panel]"));
-const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
+const navButtons = Array.from(document.querySelectorAll(".nav-btn[data-view]"));
 const loginView = document.getElementById("login-view");
 const loginForm = document.getElementById("login-form");
 const loginError = document.getElementById("login-error");
 const statusBackend = document.getElementById("status-backend");
 const statusAuth = document.getElementById("status-auth");
 const statusAPI = document.getElementById("status-api");
+const mobileNavToggle = document.getElementById("mobile-nav-toggle");
+const mobileNavPanel = document.getElementById("mobile-nav-panel");
 
 const roots = {
   tasks: document.getElementById("tasks-root"),
@@ -33,6 +36,7 @@ boot().catch((err) => {
 
 async function boot() {
   bindNav();
+  bindMobileNav();
   bindLogin();
   await trySessionBootstrap();
   render();
@@ -45,9 +49,34 @@ function bindNav() {
   for (const btn of navButtons) {
     btn.addEventListener("click", async () => {
       state.currentView = btn.dataset.view;
+      closeMobileNav();
       await render();
     });
   }
+}
+
+function bindMobileNav() {
+  if (!mobileNavToggle || !mobileNavPanel) {
+    return;
+  }
+  mobileNavToggle.addEventListener("click", () => {
+    state.mobileNavOpen = !state.mobileNavOpen;
+    syncMobileNav();
+  });
+  document.addEventListener("click", (event) => {
+    if (!state.mobileNavOpen) {
+      return;
+    }
+    if (mobileNavPanel.contains(event.target) || mobileNavToggle.contains(event.target)) {
+      return;
+    }
+    closeMobileNav();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.mobileNavOpen) {
+      closeMobileNav();
+    }
+  });
 }
 
 function bindLogin() {
@@ -136,6 +165,22 @@ function setActiveNav() {
     btn.classList.toggle("is-active", active);
     btn.disabled = !state.authenticated;
   }
+  syncMobileNav();
+}
+
+function closeMobileNav() {
+  state.mobileNavOpen = false;
+  syncMobileNav();
+}
+
+function syncMobileNav() {
+  if (!mobileNavToggle || !mobileNavPanel) {
+    return;
+  }
+  const visible = state.mobileNavOpen && state.authenticated;
+  mobileNavPanel.hidden = !visible;
+  mobileNavToggle.setAttribute("aria-expanded", visible ? "true" : "false");
+  mobileNavToggle.disabled = !state.authenticated;
 }
 
 function addLogoutButton(root) {
