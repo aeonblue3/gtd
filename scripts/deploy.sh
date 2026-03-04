@@ -42,6 +42,13 @@ run_systemctl() {
   fi
 }
 
+restore_selinux_context() {
+  local path="$1"
+  if command -v restorecon >/dev/null 2>&1; then
+    restorecon -v "${path}" || true
+  fi
+}
+
 rollback() {
   if [[ -f "${PREV_BIN_PATH}" ]]; then
     log "Rollback: restoring previous binary"
@@ -119,6 +126,7 @@ log "Building binary"
 "${GO_BIN}" build -o "${TMP_BIN}" ./cmd/main.go
 chmod 0755 "${TMP_BIN}"
 mv "${TMP_BIN}" "${BIN_PATH}"
+restore_selinux_context "${BIN_PATH}"
 trap - EXIT
 
 log "Restarting service: ${SERVICE_NAME}"
