@@ -129,6 +129,15 @@ func (h *UtilityHandler) Search(w http.ResponseWriter, r *http.Request) {
 			strings.Contains(strings.ToLower(task.Description), q) ||
 			strings.Contains(strings.ToLower(task.Notes), q) {
 			out = append(out, task)
+			continue
+		}
+		for _, subtask := range task.Subtasks {
+			if strings.Contains(strings.ToLower(subtask.Title), q) ||
+				strings.Contains(strings.ToLower(subtask.Description), q) ||
+				strings.Contains(strings.ToLower(subtask.Notes), q) {
+				out = append(out, task)
+				break
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

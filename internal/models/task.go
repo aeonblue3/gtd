@@ -4,10 +4,26 @@ import (
 	"time"
 )
 
-// Subtask represents a checklist item under a task.
+// SubtaskStatus represents the state of a subtask.
+type SubtaskStatus string
+
+const (
+	SubtaskStatusOpen SubtaskStatus = "open"
+	SubtaskStatusDone SubtaskStatus = "done"
+)
+
+// Subtask represents a nested unit of work under a task.
 type Subtask struct {
-	Title       string     `json:"title"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	ID          string        `json:"id"`
+	Title       string        `json:"title"`
+	Description string        `json:"description,omitempty"`
+	Notes       string        `json:"notes,omitempty"`
+	Status      SubtaskStatus `json:"status"`
+	Priority    Priority      `json:"priority"`
+	DueDate     *time.Time    `json:"dueDate,omitempty"`
+	Location    string        `json:"location,omitempty"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	CompletedAt *time.Time    `json:"completedAt,omitempty"`
 }
 
 // Task represents a single task in the GTD system
@@ -136,7 +152,16 @@ func (t *Task) NextRecurringInstance() *Task {
 	next.Recurrence = t.Recurrence
 	next.Subtasks = []Subtask{}
 	for _, sub := range t.Subtasks {
-		next.Subtasks = append(next.Subtasks, Subtask{Title: sub.Title})
+		next.Subtasks = append(next.Subtasks, Subtask{
+			Title:       sub.Title,
+			Description: sub.Description,
+			Notes:       sub.Notes,
+			Status:      SubtaskStatusOpen,
+			Priority:    sub.Priority,
+			DueDate:     sub.DueDate,
+			Location:    sub.Location,
+			CreatedAt:   time.Now(),
+		})
 	}
 
 	base := time.Now()

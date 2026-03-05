@@ -78,7 +78,12 @@ func (h *TasksHandler) create(w http.ResponseWriter, r *http.Request) {
 	task.Tags = cleanStringSlice(in.Tags)
 	task.Notes = strings.TrimSpace(in.Notes)
 	task.LinkedTasks = cleanStringSlice(in.LinkedTasks)
-	task.Subtasks = in.Subtasks
+	subtasks, err := normalizeAndValidateSubtasks(in.Subtasks)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	task.Subtasks = subtasks
 
 	if strings.TrimSpace(in.Status) == "" {
 		task.Status = models.StatusInbox
@@ -89,6 +94,10 @@ func (h *TasksHandler) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task.Status = status
+		if status == models.StatusDone {
+			now := time.Now()
+			task.CompletedAt = &now
+		}
 	}
 
 	if strings.TrimSpace(in.Priority) == "" {
@@ -111,6 +120,10 @@ func (h *TasksHandler) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task.Recurrence = recurrence
+	}
+	if task.Status == models.StatusDone && hasOpenSubtasks(task) {
+		writeError(w, http.StatusBadRequest, "cannot complete task with open subtasks")
+		return
 	}
 
 	if err := h.Store.AddTask(task); err != nil {
@@ -200,7 +213,12 @@ func (h *TasksHandler) update(w http.ResponseWriter, r *http.Request) {
 		task.LinkedTasks = cleanStringSlice(*in.LinkedTasks)
 	}
 	if in.Subtasks != nil {
-		task.Subtasks = *in.Subtasks
+		subtasks, err := normalizeAndValidateSubtasks(*in.Subtasks)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		task.Subtasks = subtasks
 	}
 	if in.Recurrence != nil {
 		recurrence, err := normalizeAndValidateRecurrence(*in.Recurrence)
@@ -209,6 +227,10 @@ func (h *TasksHandler) update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task.Recurrence = recurrence
+	}
+	if task.Status == models.StatusDone && hasOpenSubtasks(task) {
+		writeError(w, http.StatusBadRequest, "cannot complete task with open subtasks")
+		return
 	}
 
 	if err := h.Store.UpdateTask(task); err != nil {
@@ -232,6 +254,10 @@ func (h *TasksHandler) complete(w http.ResponseWriter, r *http.Request) {
 	task, err := h.Store.GetTask(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if hasOpenSubtasks(task) {
+		writeError(w, http.StatusBadRequest, "cannot complete task with open subtasks")
 		return
 	}
 	now := time.Now()
@@ -285,6 +311,15 @@ func filterByProjectID(tasks []*models.Task, projectID string) []*models.Task {
 		}
 	}
 	return out
+}
+
+func hasOpenSubtasks(task *models.Task) bool {
+	for _, subtask := range task.Subtasks {
+		if subtask.Status != models.SubtaskStatusDone {
+			return true
+		}
+	}
+	return false
 }
 
 type createTaskInput struct {

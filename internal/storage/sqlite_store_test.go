@@ -53,8 +53,24 @@ func TestSQLiteStoreRoundTripAllTaskFields(t *testing.T) {
 		Notes:       "Keep CLI behavior unchanged",
 		LinkedTasks: []string{other.ID},
 		Subtasks: []models.Subtask{
-			{Title: "design"},
-			{Title: "implement", CompletedAt: &doneAt},
+			{
+				Title:     "design",
+				Status:    models.SubtaskStatusOpen,
+				Priority:  models.PriorityLow,
+				CreatedAt: time.Now().Add(-1 * time.Hour).Truncate(time.Second),
+				Location:  "Desk",
+			},
+			{
+				Title:       "implement",
+				Description: "Ship first iteration",
+				Notes:       "Verify with API tests",
+				Status:      models.SubtaskStatusDone,
+				Priority:    models.PriorityHigh,
+				DueDate:     &due,
+				Location:    "Home Office",
+				CreatedAt:   time.Now().Add(-2 * time.Hour).Truncate(time.Second),
+				CompletedAt: &doneAt,
+			},
 		},
 		Recurrence: models.RecurrenceWeekly,
 	}
@@ -93,6 +109,18 @@ func TestSQLiteStoreRoundTripAllTaskFields(t *testing.T) {
 	}
 	if len(got.Subtasks) != 2 || got.Subtasks[1].CompletedAt == nil {
 		t.Fatalf("subtasks mismatch: %#v", got.Subtasks)
+	}
+	if got.Subtasks[0].Status != models.SubtaskStatusOpen || got.Subtasks[1].Status != models.SubtaskStatusDone {
+		t.Fatalf("subtask status mismatch: %#v", got.Subtasks)
+	}
+	if got.Subtasks[1].Priority != models.PriorityHigh {
+		t.Fatalf("subtask priority mismatch: %#v", got.Subtasks[1])
+	}
+	if got.Subtasks[1].Description != "Ship first iteration" || got.Subtasks[1].Notes != "Verify with API tests" {
+		t.Fatalf("subtask description/notes mismatch: %#v", got.Subtasks[1])
+	}
+	if got.Subtasks[1].DueDate == nil || got.Subtasks[1].DueDate.Unix() != due.Unix() {
+		t.Fatalf("subtask due date mismatch: %#v", got.Subtasks[1])
 	}
 	if len(got.LinkedTasks) != 1 || got.LinkedTasks[0] != other.ID {
 		t.Fatalf("dependencies mismatch: %#v", got.LinkedTasks)

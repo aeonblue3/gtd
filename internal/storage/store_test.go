@@ -60,4 +60,7 @@ func TestSubtasks(t *testing.T) {
 	if len(got.Subtasks) != 1 || got.Subtasks[0].CompletedAt == nil {
 		t.Fatal("subtask completion not persisted")
 	}
+	if got.Subtasks[0].Status != models.SubtaskStatusDone {
+		t.Fatalf("expected subtask status done, got %q", got.Subtasks[0].Status)
+	}
 }

@@ -313,6 +313,80 @@ func TestTaskUpdateClearDueDate(t *testing.T) {
 	}
 }
 
+func TestTaskCompleteBlockedWhenSubtasksOpen(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "gtd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	srv := NewServer(store, &config.ServerConfig{APITokenName: "gtd_api_key"}, allowAllValidator{}, nil, nil, nil)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{
+		"title":"parent",
+		"status":"actionable",
+		"subtasks":[{"title":"child","status":"open"}]
+	}`))
+	createReq.Header.Set("Authorization", "Bearer test-key")
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatalf("missing id in create response: %s", createRec.Body.String())
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+id+"/complete", nil)
+	completeReq.Header.Set("Authorization", "Bearer test-key")
+	completeRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(completeRec, completeReq)
+	if completeRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", completeRec.Code, completeRec.Body.String())
+	}
+}
+
+func TestSearchIncludesSubtaskFields(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "gtd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	srv := NewServer(store, &config.ServerConfig{APITokenName: "gtd_api_key"}, allowAllValidator{}, nil, nil, nil)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{
+		"title":"Parent task",
+		"subtasks":[{"title":"Read chapter","description":"Book notes","notes":"focus deep work","status":"open"}]
+	}`))
+	createReq.Header.Set("Authorization", "Bearer test-key")
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=deep%20work", nil)
+	searchReq.Header.Set("Authorization", "Bearer test-key")
+	searchRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(searchRec, searchReq)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", searchRec.Code, searchRec.Body.String())
+	}
+	var results []map[string]any
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &results); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one search result, got %d body=%s", len(results), searchRec.Body.String())
+	}
+}
+
 func TestProjectsAndTaskProjectLocationFlow(t *testing.T) {
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "gtd.db"))
 	if err != nil {

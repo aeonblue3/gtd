@@ -48,10 +48,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE TABLE IF NOT EXISTS task_subtasks (
     task_id TEXT NOT NULL,
+    id TEXT NOT NULL,
     position INTEGER NOT NULL,
     title TEXT NOT NULL,
+    description TEXT,
+    notes TEXT,
+    status TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    due_date INTEGER,
+    location TEXT,
+    created_at INTEGER NOT NULL,
     completed_at INTEGER,
-    PRIMARY KEY (task_id, position),
+    PRIMARY KEY (task_id, id),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
@@ -150,11 +158,50 @@ CREATE INDEX IF NOT EXISTS idx_task_notifications_status ON task_notifications(d
 	if err := addColumnIfMissing(db, "users", "last_totp_step", "INTEGER"); err != nil {
 		return fmt.Errorf("add users.last_totp_step column: %w", err)
 	}
+	if err := addColumnIfMissing(db, "task_subtasks", "id", "TEXT"); err != nil {
+		return fmt.Errorf("add task_subtasks.id column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "description", "TEXT"); err != nil {
+		return fmt.Errorf("add task_subtasks.description column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "notes", "TEXT"); err != nil {
+		return fmt.Errorf("add task_subtasks.notes column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "status", "TEXT"); err != nil {
+		return fmt.Errorf("add task_subtasks.status column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "priority", "TEXT"); err != nil {
+		return fmt.Errorf("add task_subtasks.priority column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "due_date", "INTEGER"); err != nil {
+		return fmt.Errorf("add task_subtasks.due_date column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "location", "TEXT"); err != nil {
+		return fmt.Errorf("add task_subtasks.location column: %w", err)
+	}
+	if err := addColumnIfMissing(db, "task_subtasks", "created_at", "INTEGER"); err != nil {
+		return fmt.Errorf("add task_subtasks.created_at column: %w", err)
+	}
 	if _, err := db.Exec(`UPDATE auth_sessions SET refresh_expires_at = created_at + 2592000 WHERE refresh_expires_at IS NULL`); err != nil {
 		return fmt.Errorf("backfill auth_sessions.refresh_expires_at: %w", err)
 	}
+	if _, err := db.Exec(`UPDATE task_subtasks SET id = printf('%s-%d', task_id, position) WHERE id IS NULL OR id = ''`); err != nil {
+		return fmt.Errorf("backfill task_subtasks.id: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE task_subtasks SET status = CASE WHEN completed_at IS NOT NULL THEN 'done' ELSE 'open' END WHERE status IS NULL OR status = ''`); err != nil {
+		return fmt.Errorf("backfill task_subtasks.status: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE task_subtasks SET priority = 'none' WHERE priority IS NULL OR priority = ''`); err != nil {
+		return fmt.Errorf("backfill task_subtasks.priority: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE task_subtasks SET created_at = strftime('%s','now') WHERE created_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill task_subtasks.created_at: %w", err)
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)`); err != nil {
 		return fmt.Errorf("create tasks.project_id index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_task_subtasks_task_position ON task_subtasks(task_id, position)`); err != nil {
+		return fmt.Errorf("create task_subtasks task/position index: %w", err)
 	}
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_token_digest ON api_keys(token_digest)`); err != nil {
 		return fmt.Errorf("create api_keys.token_digest index: %w", err)

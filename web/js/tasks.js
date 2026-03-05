@@ -7,7 +7,6 @@ import {
   fetchReview,
   fetchTasks,
   fetchToday,
-  searchTasks,
   updateProject,
   updateTask,
 } from "./api.js";
@@ -31,20 +30,19 @@ const toastRegion = document.getElementById("toast-region");
 
 let modalOnSaved = null;
 let modalBound = false;
-let taskSearchDebounce = null;
 let tasksRenderBusy = false;
 const PENDING_LABEL = "Saving...";
 let projectsCache = [];
-const tasksViewState = {
+const defaultFilters = {
   q: "",
   status: "",
   priority: "",
   context: "",
   projectId: "",
-  filtersOpen: false,
+  includeDone: false,
 };
 
-export async function renderTasks(root) {
+export async function renderTasks(root, filters = {}) {
   if (tasksRenderBusy) {
     return;
   }
@@ -52,17 +50,15 @@ export async function renderTasks(root) {
   await refreshProjects();
   root.innerHTML = "";
   root.appendChild(sectionTitle("Tasks"));
-  root.appendChild(tasksControlPanel(root));
-  root.appendChild(quickAddFab(root));
 
   const loading = loadingIndicator("Loading tasks...");
   root.appendChild(loading);
 
   try {
-    const tasks = await fetchTasksForView();
+    const tasks = await fetchTasksForView("tasks", filters);
     loading.remove();
     root.appendChild(renderTaskList(tasks, async () => {
-      await renderTasks(root);
+      await renderTasks(root, filters);
     }, "No tasks match current filters."));
   } catch (err) {
     loading.remove();
@@ -73,24 +69,34 @@ export async function renderTasks(root) {
   }
 }
 
-export async function renderInbox(root) {
+export async function renderInbox(root, filters = {}) {
   await refreshProjects();
-  const tasks = await fetchTasks({ status: "inbox" });
+  const tasks = await fetchTasksForView("inbox", filters);
   root.innerHTML = "";
   root.appendChild(sectionTitle("Inbox"));
   root.appendChild(renderTaskList(tasks, async () => {
-    await renderInbox(root);
+    await renderInbox(root, filters);
   }, "Inbox is clear."));
 }
 
-export async function renderToday(root) {
+export async function renderToday(root, filters = {}) {
   await refreshProjects();
-  const tasks = await fetchToday();
+  const tasks = await fetchTasksForView("today", filters);
   root.innerHTML = "";
   root.appendChild(sectionTitle("Today"));
   root.appendChild(renderTaskList(tasks, async () => {
-    await renderToday(root);
+    await renderToday(root, filters);
   }, "No tasks due today."));
+}
+
+export async function renderCompleted(root, filters = {}) {
+  await refreshProjects();
+  const tasks = await fetchTasksForView("completed", filters);
+  root.innerHTML = "";
+  root.appendChild(sectionTitle("Completed"));
+  root.appendChild(renderTaskList(tasks, async () => {
+    await renderCompleted(root, filters);
+  }, "No completed tasks match current filters."));
 }
 
 export async function renderReview(root) {
@@ -112,6 +118,49 @@ export async function renderProjects(root) {
   root.appendChild(sectionTitle("Projects"));
   root.appendChild(projectCreateForm(root));
   root.appendChild(projectList(root));
+}
+
+export async function renderProjectDetail(root, projectID, filters = {}, onNavigateProjects) {
+  await refreshProjects();
+  root.innerHTML = "";
+  const project = projectsCache.find((item) => item.id === projectID);
+  const title = sectionTitle(project ? project.name : "Project");
+  root.appendChild(title);
+  const meta = document.createElement("p");
+  meta.className = "muted";
+  meta.textContent = project ? (project.description || "No description") : "Project not found.";
+  root.appendChild(meta);
+
+  const backBtn = document.createElement("button");
+  backBtn.className = "btn";
+  backBtn.type = "button";
+  backBtn.textContent = "Back to Projects";
+  backBtn.addEventListener("click", () => {
+    if (onNavigateProjects) {
+      onNavigateProjects();
+    }
+  });
+  root.appendChild(backBtn);
+
+  if (!project) {
+    root.appendChild(placeholder("Project does not exist."));
+    return;
+  }
+
+  const loading = loadingIndicator("Loading project tasks...");
+  root.appendChild(loading);
+  try {
+    const tasks = await fetchTasks({ project_id: projectID });
+    loading.remove();
+    const filtered = applyGlobalFilters(tasks, { ...filters, projectId: projectID }, "project");
+    root.appendChild(renderTaskList(filtered, async () => {
+      await renderProjectDetail(root, projectID, filters, onNavigateProjects);
+    }, "No tasks in this project match current filters."));
+  } catch (err) {
+    loading.remove();
+    root.appendChild(placeholder("Could not load project tasks."));
+    showToast(err.message || "Could not load project tasks", true);
+  }
 }
 
 function taskCard(task, onChanged) {
@@ -161,6 +210,8 @@ function taskCard(task, onChanged) {
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
+  const subtasks = normalizeTaskSubtasks(task);
+  const hasOpenSubtasks = subtasks.some((subtask) => !isSubtaskDone(subtask));
 
   const statusSelect = document.createElement("select");
   statusSelect.innerHTML = `
@@ -219,8 +270,8 @@ function taskCard(task, onChanged) {
 
   const completeBtn = document.createElement("button");
   completeBtn.className = "btn btn-primary";
-  completeBtn.textContent = task.status === "done" ? "Completed" : "Mark Done";
-  completeBtn.disabled = task.status === "done";
+  completeBtn.textContent = task.status === "done" ? "Completed" : (hasOpenSubtasks ? "Subtasks Open" : "Mark Done");
+  completeBtn.disabled = task.status === "done" || hasOpenSubtasks;
   completeBtn.addEventListener("click", async () => {
     try {
       startButtonPending(completeBtn);
@@ -283,10 +334,254 @@ function taskCard(task, onChanged) {
   actions.appendChild(editBtn);
   actions.appendChild(completeBtn);
 
+  const subtaskSection = renderSubtasks(task, subtasks, onChanged);
+
   card.appendChild(title);
   card.appendChild(meta);
   card.appendChild(actions);
+  if (hasOpenSubtasks && task.status !== "done") {
+    const blockHint = document.createElement("p");
+    blockHint.className = "muted";
+    blockHint.style.margin = "0";
+    blockHint.textContent = "Complete all subtasks before marking this task done.";
+    card.appendChild(blockHint);
+  }
+  card.appendChild(subtaskSection);
   return card;
+}
+
+function renderSubtasks(task, subtasks, onChanged) {
+  const section = document.createElement("section");
+  section.className = "subtasks-section";
+
+  const doneCount = subtasks.filter((subtask) => isSubtaskDone(subtask)).length;
+  const heading = document.createElement("h4");
+  heading.className = "subtasks-heading";
+  heading.textContent = `Subtasks (${doneCount}/${subtasks.length})`;
+  section.appendChild(heading);
+
+  const list = document.createElement("div");
+  list.className = "subtasks-list";
+  for (let index = 0; index < subtasks.length; index += 1) {
+    const subtask = subtasks[index];
+    list.appendChild(renderSubtaskRow(task, subtasks, subtask, index, onChanged));
+  }
+  section.appendChild(list);
+  section.appendChild(renderSubtaskCreate(task, subtasks, onChanged));
+  return section;
+}
+
+function renderSubtaskRow(task, subtasks, subtask, index, onChanged) {
+  const item = document.createElement("article");
+  item.className = "subtask-item";
+
+  const row = document.createElement("div");
+  row.className = "subtask-row";
+
+  const doneLabel = document.createElement("label");
+  doneLabel.className = "subtask-done-toggle";
+  const doneToggle = document.createElement("input");
+  doneToggle.type = "checkbox";
+  doneToggle.checked = isSubtaskDone(subtask);
+  doneLabel.appendChild(doneToggle);
+  doneLabel.append("Done");
+
+  const title = document.createElement("input");
+  title.type = "text";
+  title.value = subtask.title || "";
+  title.placeholder = "Subtask title";
+
+  const priority = document.createElement("select");
+  priority.innerHTML = `
+    <option value="none">none</option>
+    <option value="low">low</option>
+    <option value="medium">medium</option>
+    <option value="high">high</option>
+  `;
+  priority.value = subtask.priority || "none";
+
+  const dueDate = document.createElement("input");
+  dueDate.type = "date";
+  dueDate.value = toDateInputValue(subtask.dueDate || "");
+
+  const location = document.createElement("input");
+  location.type = "text";
+  location.placeholder = "Location";
+  location.value = subtask.location || "";
+
+  const detailsToggle = document.createElement("button");
+  detailsToggle.type = "button";
+  detailsToggle.className = "btn";
+  detailsToggle.textContent = "Details";
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn";
+  save.textContent = "Save";
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "btn";
+  remove.textContent = "Remove";
+
+  row.appendChild(doneLabel);
+  row.appendChild(title);
+  row.appendChild(priority);
+  row.appendChild(dueDate);
+  row.appendChild(location);
+  row.appendChild(detailsToggle);
+  row.appendChild(save);
+  row.appendChild(remove);
+
+  const details = document.createElement("div");
+  details.className = "subtask-details";
+  details.hidden = true;
+
+  const description = document.createElement("textarea");
+  description.rows = 2;
+  description.placeholder = "Description";
+  description.value = subtask.description || "";
+
+  const notes = document.createElement("textarea");
+  notes.rows = 2;
+  notes.placeholder = "Notes";
+  notes.value = subtask.notes || "";
+
+  details.appendChild(description);
+  details.appendChild(notes);
+
+  detailsToggle.addEventListener("click", () => {
+    details.hidden = !details.hidden;
+  });
+
+  const buildNextSubtasks = () => subtasks.map((current, currentIndex) => {
+    if (currentIndex !== index) {
+      return current;
+    }
+    return {
+      ...current,
+      id: current.id || createClientID(),
+      title: title.value.trim(),
+      description: description.value.trim(),
+      notes: notes.value.trim(),
+      status: doneToggle.checked ? "done" : "open",
+      priority: priority.value,
+      dueDate: dueDate.value ? dateInputToNoonISOString(dueDate.value) : null,
+      location: location.value.trim(),
+      createdAt: current.createdAt || new Date().toISOString(),
+    };
+  });
+
+  save.addEventListener("click", async () => {
+    const nextTitle = title.value.trim();
+    if (!nextTitle) {
+      showToast("Subtask title is required.", true);
+      title.focus();
+      return;
+    }
+    startButtonPending(save);
+    try {
+      const nextSubtasks = buildNextSubtasks();
+      nextSubtasks[index].title = nextTitle;
+      await updateTask(task.id, { subtasks: nextSubtasks });
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      showToast(err.message || "Could not update subtask", true);
+    } finally {
+      stopButtonPending(save);
+    }
+  });
+
+  doneToggle.addEventListener("change", async () => {
+    doneToggle.disabled = true;
+    try {
+      const nextSubtasks = buildNextSubtasks();
+      await updateTask(task.id, { subtasks: nextSubtasks });
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      doneToggle.checked = !doneToggle.checked;
+      showToast(err.message || "Could not update subtask status", true);
+    } finally {
+      doneToggle.disabled = false;
+    }
+  });
+
+  remove.addEventListener("click", async () => {
+    startButtonPending(remove);
+    try {
+      const nextSubtasks = subtasks.filter((_, currentIndex) => currentIndex !== index);
+      await updateTask(task.id, { subtasks: nextSubtasks });
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      showToast(err.message || "Could not remove subtask", true);
+    } finally {
+      stopButtonPending(remove);
+    }
+  });
+
+  item.appendChild(row);
+  item.appendChild(details);
+  return item;
+}
+
+function renderSubtaskCreate(task, subtasks, onChanged) {
+  const form = document.createElement("form");
+  form.className = "subtask-create";
+
+  const title = document.createElement("input");
+  title.type = "text";
+  title.placeholder = "Add subtask";
+  title.required = true;
+
+  const add = document.createElement("button");
+  add.type = "submit";
+  add.className = "btn btn-primary";
+  add.textContent = "Add";
+
+  form.appendChild(title);
+  form.appendChild(add);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const nextTitle = title.value.trim();
+    if (!nextTitle) {
+      return;
+    }
+    startButtonPending(add);
+    try {
+      const nextSubtasks = [
+        ...subtasks,
+        {
+          id: createClientID(),
+          title: nextTitle,
+          description: "",
+          notes: "",
+          status: "open",
+          priority: "none",
+          dueDate: null,
+          location: "",
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      await updateTask(task.id, { subtasks: nextSubtasks });
+      title.value = "";
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      showToast(err.message || "Could not add subtask", true);
+    } finally {
+      stopButtonPending(add);
+    }
+  });
+
+  return form;
 }
 
 function renderTaskList(tasks, onChanged, emptyMessage) {
@@ -301,153 +596,29 @@ function renderTaskList(tasks, onChanged, emptyMessage) {
   return list;
 }
 
-function tasksControlPanel(root) {
-  const panel = document.createElement("section");
-  panel.className = "card task-controls";
-
-  const row = document.createElement("div");
-  row.className = "task-controls-row";
-
-  const search = document.createElement("input");
-  search.type = "search";
-  search.placeholder = "Search title/description/notes";
-  search.value = tasksViewState.q;
-  search.addEventListener("input", () => {
-    tasksViewState.q = search.value.trim();
-    if (taskSearchDebounce) {
-      clearTimeout(taskSearchDebounce);
-    }
-    taskSearchDebounce = setTimeout(() => {
-      renderTasks(root).catch((err) => showToast(err.message || "Search failed", true));
-    }, 220);
-  });
-
-  const filtersToggle = document.createElement("button");
-  filtersToggle.className = "btn";
-  filtersToggle.type = "button";
-  const activeFilters = activeFiltersCount();
-  filtersToggle.textContent = activeFilters > 0 ? `Filters (${activeFilters})` : "Filters";
-  filtersToggle.addEventListener("click", () => {
-    tasksViewState.filtersOpen = !tasksViewState.filtersOpen;
-    renderTasks(root).catch((err) => showToast(err.message || "Could not open filters", true));
-  });
-
-  row.appendChild(search);
-  row.appendChild(filtersToggle);
-  panel.appendChild(row);
-
-  if (!tasksViewState.filtersOpen) {
-    return panel;
+async function fetchTasksForView(view, filters = {}) {
+  const f = { ...defaultFilters, ...filters };
+  let base = [];
+  switch (view) {
+    case "inbox":
+      base = await fetchTasks({ status: "inbox" });
+      break;
+    case "today":
+      base = await fetchToday();
+      break;
+    case "completed":
+      base = await fetchTasks({ status: "done" });
+      break;
+    default:
+      base = await fetchTasks(compact({
+        status: f.status,
+        priority: f.priority,
+        context: f.context,
+        project_id: f.projectId,
+      }));
+      break;
   }
-
-  const grid = document.createElement("div");
-  grid.className = "task-controls-grid task-filters-advanced";
-
-  const status = document.createElement("select");
-  status.innerHTML = `
-    <option value="">Status: all</option>
-    <option value="inbox">inbox</option>
-    <option value="actionable">actionable</option>
-    <option value="waiting">waiting</option>
-    <option value="someday">someday</option>
-    <option value="done">done</option>
-  `;
-  status.value = tasksViewState.status;
-  status.addEventListener("change", () => {
-    tasksViewState.status = status.value;
-    renderTasks(root).catch((err) => showToast(err.message || "Filter failed", true));
-  });
-
-  const priority = document.createElement("select");
-  priority.innerHTML = `
-    <option value="">Priority: all</option>
-    <option value="none">none</option>
-    <option value="low">low</option>
-    <option value="medium">medium</option>
-    <option value="high">high</option>
-  `;
-  priority.value = tasksViewState.priority;
-  priority.addEventListener("change", () => {
-    tasksViewState.priority = priority.value;
-    renderTasks(root).catch((err) => showToast(err.message || "Filter failed", true));
-  });
-
-  const context = document.createElement("input");
-  context.type = "text";
-  context.placeholder = "Context filter";
-  context.value = tasksViewState.context;
-  context.addEventListener("change", () => {
-    tasksViewState.context = context.value.trim();
-    renderTasks(root).catch((err) => showToast(err.message || "Filter failed", true));
-  });
-
-  const project = document.createElement("select");
-  project.innerHTML = `<option value="">Project: all</option>`;
-  for (const p of projectsCache) {
-    const option = document.createElement("option");
-    option.value = p.id;
-    option.textContent = p.name;
-    project.appendChild(option);
-  }
-  project.value = tasksViewState.projectId;
-  project.addEventListener("change", () => {
-    tasksViewState.projectId = project.value;
-    renderTasks(root).catch((err) => showToast(err.message || "Filter failed", true));
-  });
-
-  const clearBtn = document.createElement("button");
-  clearBtn.className = "btn";
-  clearBtn.type = "button";
-  clearBtn.textContent = "Clear Filters";
-  clearBtn.addEventListener("click", () => {
-    tasksViewState.q = "";
-    tasksViewState.status = "";
-    tasksViewState.priority = "";
-    tasksViewState.context = "";
-    tasksViewState.projectId = "";
-    tasksViewState.filtersOpen = false;
-    renderTasks(root).catch((err) => showToast(err.message || "Could not reset filters", true));
-  });
-
-  grid.appendChild(status);
-  grid.appendChild(priority);
-  grid.appendChild(context);
-  grid.appendChild(project);
-  panel.appendChild(grid);
-  panel.appendChild(clearBtn);
-  return panel;
-}
-
-async function fetchTasksForView() {
-  const { q, status, priority, context, projectId } = tasksViewState;
-  if (!q) {
-    return fetchTasks(compact({
-      status,
-      priority,
-      context,
-      project_id: projectId,
-    }));
-  }
-
-  const searched = await searchTasks(q);
-  return searched.filter((task) => {
-    if (status && task.status !== status) {
-      return false;
-    }
-    if (priority && task.priority !== priority) {
-      return false;
-    }
-    if (context) {
-      const contexts = Array.isArray(task.contexts || task.context) ? (task.contexts || task.context) : [];
-      if (!contexts.includes(context)) {
-        return false;
-      }
-    }
-    if (projectId && (task.projectId || "") !== projectId) {
-      return false;
-    }
-    return true;
-  });
+  return applyGlobalFilters(base, f, view);
 }
 
 function compact(obj) {
@@ -460,76 +631,76 @@ function compact(obj) {
   return out;
 }
 
-function activeFiltersCount() {
-  let count = 0;
-  if (tasksViewState.status) {
-    count += 1;
-  }
-  if (tasksViewState.priority) {
-    count += 1;
-  }
-  if (tasksViewState.context) {
-    count += 1;
-  }
-  if (tasksViewState.projectId) {
-    count += 1;
-  }
-  return count;
+function normalizeTaskSubtasks(task) {
+  const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+  return subtasks.map((subtask) => ({
+    id: subtask.id || createClientID(),
+    title: subtask.title || "",
+    description: subtask.description || "",
+    notes: subtask.notes || "",
+    status: isSubtaskDone(subtask) ? "done" : "open",
+    priority: subtask.priority || "none",
+    dueDate: subtask.dueDate || null,
+    location: subtask.location || "",
+    createdAt: subtask.createdAt || new Date().toISOString(),
+    completedAt: subtask.completedAt || null,
+  }));
 }
 
-function quickAddFab(root) {
-  const wrap = document.createElement("div");
+function isSubtaskDone(subtask) {
+  return subtask && (subtask.status === "done" || !!subtask.completedAt);
+}
 
-  const fab = document.createElement("button");
-  fab.type = "button";
-  fab.className = "fab-add";
-  fab.title = "Quick add task";
-  fab.setAttribute("aria-label", "Quick add task");
-  fab.textContent = "+";
+function createClientID() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  return `sub-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+}
 
-  const overlay = document.createElement("div");
-  overlay.className = "quick-add-overlay";
-  overlay.hidden = true;
-
-  const modal = document.createElement("section");
-  modal.className = "quick-add-modal card stack";
-
-  const header = document.createElement("div");
-  header.className = "modal-header";
-  const title = document.createElement("h3");
-  title.textContent = "Quick Add";
-  title.style.margin = "0";
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "btn";
-  close.textContent = "Close";
-  close.addEventListener("click", () => {
-    overlay.hidden = true;
-  });
-  header.appendChild(title);
-  header.appendChild(close);
-
-  const form = addTaskForm(async () => {
-    overlay.hidden = true;
-    await renderTasks(root);
-  }, { asModal: true });
-
-  modal.appendChild(header);
-  modal.appendChild(form);
-  overlay.appendChild(modal);
-
-  fab.addEventListener("click", () => {
-    overlay.hidden = false;
-  });
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      overlay.hidden = true;
+function applyGlobalFilters(tasks, filters, view) {
+  const q = (filters.q || "").trim().toLowerCase();
+  return (tasks || []).filter((task) => {
+    if (view === "completed") {
+      if (task.status !== "done") {
+        return false;
+      }
+    } else if (!filters.includeDone && task.status === "done") {
+      return false;
     }
-  });
 
-  wrap.appendChild(fab);
-  wrap.appendChild(overlay);
-  return wrap;
+    if (filters.status && task.status !== filters.status) {
+      return false;
+    }
+    if (filters.priority && task.priority !== filters.priority) {
+      return false;
+    }
+    if (filters.projectId && (task.projectId || "") !== filters.projectId) {
+      return false;
+    }
+    if (filters.context) {
+      const contexts = Array.isArray(task.contexts || task.context) ? (task.contexts || task.context) : [];
+      if (!contexts.includes(filters.context)) {
+        return false;
+      }
+    }
+    if (q && !matchesTaskQuery(task, q)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function matchesTaskQuery(task, q) {
+  const baseText = `${task.title || ""}\n${task.description || ""}\n${task.notes || ""}`.toLowerCase();
+  if (baseText.includes(q)) {
+    return true;
+  }
+  const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+  return subtasks.some((subtask) => {
+    const subText = `${subtask.title || ""}\n${subtask.description || ""}\n${subtask.notes || ""}`.toLowerCase();
+    return subText.includes(q);
+  });
 }
 
 function addTaskForm(onAdded, options = {}) {
@@ -804,6 +975,13 @@ function projectList(root) {
     const actions = document.createElement("div");
     actions.className = "task-actions";
 
+    const open = document.createElement("button");
+    open.className = "btn btn-primary";
+    open.textContent = "Open";
+    open.addEventListener("click", () => {
+      window.location.hash = `project/${project.id}`;
+    });
+
     const renameInput = document.createElement("input");
     renameInput.type = "text";
     renameInput.value = project.name;
@@ -879,6 +1057,7 @@ function projectList(root) {
       }
     });
 
+    actions.appendChild(open);
     actions.appendChild(edit);
     actions.appendChild(saveRename);
     actions.appendChild(del);

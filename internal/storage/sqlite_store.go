@@ -245,7 +245,13 @@ func (s *SQLiteStore) AddSubtask(taskID, title string) error {
 	if err != nil {
 		return err
 	}
-	task.Subtasks = append(task.Subtasks, models.Subtask{Title: strings.TrimSpace(title)})
+	task.Subtasks = append(task.Subtasks, models.Subtask{
+		ID:        uuid.NewString(),
+		Title:     strings.TrimSpace(title),
+		Status:    models.SubtaskStatusOpen,
+		Priority:  models.PriorityNone,
+		CreatedAt: time.Now(),
+	})
 	return s.UpdateTask(task)
 }
 
@@ -258,6 +264,7 @@ func (s *SQLiteStore) CompleteSubtask(taskID string, index int) error {
 		return fmt.Errorf("subtask index out of range")
 	}
 	now := time.Now()
+	task.Subtasks[index].Status = models.SubtaskStatusDone
 	task.Subtasks[index].CompletedAt = &now
 	return s.UpdateTask(task)
 }
@@ -468,9 +475,31 @@ func (s *SQLiteStore) replaceSubtasks(tx *sql.Tx, taskID string, subtasks []mode
 		return err
 	}
 	for i, subtask := range subtasks {
+		if strings.TrimSpace(subtask.ID) == "" {
+			subtask.ID = uuid.NewString()
+		}
+		if subtask.CreatedAt.IsZero() {
+			subtask.CreatedAt = time.Now()
+		}
+		if subtask.Status == "" {
+			subtask.Status = models.SubtaskStatusOpen
+		}
+		if subtask.Priority == "" {
+			subtask.Priority = models.PriorityNone
+		}
+		if subtask.Status == models.SubtaskStatusDone && subtask.CompletedAt == nil {
+			now := time.Now()
+			subtask.CompletedAt = &now
+		}
+		if subtask.Status == models.SubtaskStatusOpen {
+			subtask.CompletedAt = nil
+		}
 		if _, err := tx.Exec(`
-INSERT INTO task_subtasks (task_id, position, title, completed_at)
-VALUES (?, ?, ?, ?)`, taskID, i, subtask.Title, timeToUnix(subtask.CompletedAt)); err != nil {
+INSERT INTO task_subtasks (task_id, id, position, title, description, notes, status, priority, due_date, location, created_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			taskID, subtask.ID, i, subtask.Title, strings.TrimSpace(subtask.Description), strings.TrimSpace(subtask.Notes),
+			string(subtask.Status), string(subtask.Priority), timeToUnix(subtask.DueDate), nullIfEmpty(subtask.Location),
+			subtask.CreatedAt.Unix(), timeToUnix(subtask.CompletedAt)); err != nil {
 			return err
 		}
 	}
@@ -498,7 +527,7 @@ VALUES (?, ?)`, taskID, depID); err != nil {
 
 func (s *SQLiteStore) loadSubtasks(taskID string) ([]models.Subtask, error) {
 	rows, err := s.db.Query(`
-SELECT title, completed_at
+SELECT id, title, description, notes, status, priority, due_date, location, created_at, completed_at
 FROM task_subtasks
 WHERE task_id = ?
 ORDER BY position ASC`, taskID)
@@ -510,13 +539,25 @@ ORDER BY position ASC`, taskID)
 	var subtasks []models.Subtask
 	for rows.Next() {
 		var (
-			title       string
-			completedAt sql.NullInt64
+			sub                    models.Subtask
+			status, priority       string
+			dueDate, completedAt   sql.NullInt64
+			location               sql.NullString
+			createdAtUnix          int64
 		)
-		if err := rows.Scan(&title, &completedAt); err != nil {
+		if err := rows.Scan(
+			&sub.ID, &sub.Title, &sub.Description, &sub.Notes, &status, &priority, &dueDate, &location, &createdAtUnix, &completedAt,
+		); err != nil {
 			return nil, err
 		}
-		sub := models.Subtask{Title: title}
+		sub.Status = models.SubtaskStatus(status)
+		sub.Priority = models.Priority(priority)
+		sub.Location = strings.TrimSpace(location.String)
+		sub.CreatedAt = time.Unix(createdAtUnix, 0)
+		if dueDate.Valid {
+			d := time.Unix(dueDate.Int64, 0)
+			sub.DueDate = &d
+		}
 		if completedAt.Valid {
 			t := time.Unix(completedAt.Int64, 0)
 			sub.CompletedAt = &t

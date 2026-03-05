@@ -109,7 +109,7 @@ Notes:
 
 ### `POST /api/v1/tasks`
 
-- `400` invalid JSON body / missing title / invalid enum values
+- `400` invalid JSON body / missing title / invalid enum values / invalid subtask values / `status=done` with open subtasks
 - `401` missing/invalid auth token
 - `403` CSRF failure for cookie-authenticated requests
 - `429` authenticated rate limit exceeded
@@ -124,7 +124,7 @@ Notes:
 
 ### `PUT /api/v1/tasks/{id}`
 
-- `400` invalid JSON body / invalid enum values / empty title update
+- `400` invalid JSON body / invalid enum values / empty title update / invalid subtask values / `status=done` with open subtasks
 - `401` missing/invalid auth token
 - `403` CSRF failure for cookie-authenticated requests
 - `404` task not found
@@ -141,6 +141,7 @@ Notes:
 
 ### `POST /api/v1/tasks/{id}/complete`
 
+- `400` task has open subtasks (`cannot complete task with open subtasks`)
 - `401` missing/invalid auth token
 - `403` CSRF failure for cookie-authenticated requests
 - `404` task not found

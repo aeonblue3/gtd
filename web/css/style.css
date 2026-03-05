@@ -22,8 +22,8 @@ textarea {
 .app-shell {
   min-height: 100vh;
   padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: var(--space-4);
 }
 
@@ -34,12 +34,14 @@ textarea {
   box-shadow: var(--shadow-sm);
 }
 
-.topbar {
-  padding: var(--space-4);
+.sidebar {
+  padding: var(--space-5) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  position: relative;
+  gap: var(--space-3);
+  align-self: start;
+  position: sticky;
+  top: var(--space-4);
 }
 
 .brand h1 {
@@ -57,7 +59,11 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-left: auto;
+}
+
+.nav-links-sidebar {
+  flex-direction: column;
+  flex-wrap: nowrap;
 }
 
 .nav-toggle {
@@ -100,7 +106,56 @@ textarea {
 
 .content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
+}
+
+.app-main {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.global-toolbar {
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.global-toolbar-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toolbar-title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.global-filters {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.global-filter-row {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.global-filter-grid {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+}
+
+.global-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .status-footer {
@@ -207,6 +262,7 @@ textarea {
 .view {
   display: none;
   padding: var(--space-5);
+  width: 100%;
 }
 
 .view.is-visible {
@@ -283,29 +339,6 @@ input.is-pending {
   margin: 0;
 }
 
-.task-controls {
-  padding: var(--space-4);
-  margin-bottom: var(--space-3);
-  display: grid;
-  gap: var(--space-2);
-}
-
-.task-controls-grid {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.task-controls-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-2);
-}
-
-.task-filters-advanced {
-  display: grid;
-  gap: var(--space-2);
-}
-
 .fab-add {
   position: fixed;
   right: var(--space-4);
@@ -345,6 +378,68 @@ input.is-pending {
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
+}
+
+.subtasks-section {
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.subtasks-heading {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.subtasks-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.subtask-item {
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-surface-elevated) 92%, transparent);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.subtask-row {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1.6fr) auto auto minmax(120px, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.subtask-details {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.subtask-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.subtask-done-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.subtask-done-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
 }
 
 .summary-grid {
@@ -405,59 +500,51 @@ input.is-pending {
 @media (min-width: 900px) {
   .app-shell {
     padding: var(--space-6);
-    max-width: 1100px;
+    max-width: 1500px;
     margin: 0 auto;
   }
+}
 
-  .topbar {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+.app-shell.is-unauthenticated {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+@media (max-width: 1024px) {
+  .app-shell {
+    grid-template-columns: 1fr;
   }
 
-  .task-controls-grid {
-    grid-template-columns: 1fr 1fr 1fr 1fr;
-    align-items: end;
+  .sidebar {
+    display: none;
+  }
+
+  .global-filter-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }
 
 @media (max-width: 430px) {
-  .topbar {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: start;
-  }
-
-  .brand {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
   .app-shell {
     padding: var(--space-3);
     gap: var(--space-3);
   }
 
-  .topbar,
+  .global-toolbar,
   .view {
     padding: var(--space-4);
   }
 
-  .nav-links {
-    display: none;
+  .global-toolbar-top {
+    justify-content: space-between;
   }
 
   .nav-toggle {
     display: inline-flex;
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
-    align-self: start;
-    margin-left: 0;
   }
 
   .mobile-nav-panel {
-    grid-column: 1 / -1;
     width: 100%;
     position: static;
     z-index: 1800;
@@ -468,7 +555,13 @@ input.is-pending {
   }
 }
 
-@media (min-width: 431px) {
+@media (min-width: 431px) and (max-width: 1024px) {
+  .nav-toggle {
+    display: inline-flex;
+  }
+}
+
+@media (min-width: 1025px) {
   .nav-toggle,
   .mobile-nav-panel {
     display: none !important;
@@ -483,6 +576,21 @@ input.is-pending {
   .task-actions .btn,
   .task-actions select {
     flex: 1 1 calc(50% - var(--space-2));
+  }
+
+  .subtask-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .subtask-row input,
+  .subtask-row select,
+  .subtask-row .btn {
+    width: 100%;
+  }
+
+  .subtask-row > :nth-child(1),
+  .subtask-row > :nth-child(2) {
+    grid-column: span 2;
   }
 
   .modal {

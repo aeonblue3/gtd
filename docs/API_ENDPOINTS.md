@@ -298,7 +298,16 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   "linkedTasks": ["task-id"],
   "subtasks": [
     {
-      "title": "checklist item"
+      "id": "subtask-id",
+      "title": "checklist item",
+      "description": "optional",
+      "notes": "optional",
+      "status": "open",
+      "priority": "none",
+      "dueDate": "2026-02-18T16:00:00Z",
+      "location": "Home Office",
+      "createdAt": "2026-02-18T12:00:00Z",
+      "completedAt": "2026-02-18T13:00:00Z"
     }
   ],
   "recurrence": "none"
@@ -311,6 +320,9 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   - `projectId` is optional; when provided it must reference an existing project.
   - `location` is optional free-text.
   - Defaults: `status=inbox`, `priority=none`, `recurrence=none`.
+  - Subtasks use `status: open|done` and `priority: none|low|medium|high`.
+  - Subtask defaults when omitted: `status=open`, `priority=none`, `createdAt=now`.
+  - Parent task completion is blocked while any subtask is `open`.
   - Enum validation:
     - `status`: `inbox|actionable|waiting|someday|done`
     - `priority`: `none|low|medium|high`
@@ -328,6 +340,7 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
   - provided fields overwrite existing values
   - `projectId` and `location` can be set/changed with normal partial update semantics
   - if `status` is set to `done`, `completedAt` is set automatically
+  - if `status` is `done` while any subtask is still `open`, the request is rejected with `400`
   - enum fields are validated using the same rules as create
   - set `clearDueDate: true` to explicitly clear a due date
 
@@ -346,6 +359,8 @@ For cookie-authenticated state-changing requests (`POST/PUT/PATCH/DELETE`), send
 - Auth: required
 - Body: none
 - Response `200`: updated task object with `status=done` and `completedAt` set
+- Notes:
+  - returns `400` when subtasks are still open
 
 ---
 

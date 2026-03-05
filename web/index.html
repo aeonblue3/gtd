@@ -9,77 +9,94 @@
   </head>
   <body>
     <div id="app" class="app-shell">
-      <header class="topbar card">
+      <aside id="app-sidebar" class="sidebar card">
         <div class="brand">
           <h1>GTD</h1>
           <p>Powerful and approachable task flow</p>
         </div>
-        <button id="mobile-nav-toggle" class="nav-btn nav-toggle" type="button" aria-expanded="false" aria-controls="mobile-nav-panel">Menu</button>
-        <nav class="nav-links" aria-label="Primary">
+        <nav class="nav-links nav-links-sidebar" aria-label="Primary">
           <button data-view="tasks" class="nav-btn is-active">Tasks</button>
           <button data-view="inbox" class="nav-btn">Inbox</button>
           <button data-view="today" class="nav-btn">Today</button>
+          <button data-view="completed" class="nav-btn">Completed</button>
           <button data-view="review" class="nav-btn">Review</button>
           <button data-view="projects" class="nav-btn">Projects</button>
           <button data-view="settings" class="nav-btn">Settings</button>
         </nav>
-        <div id="mobile-nav-panel" class="mobile-nav-panel card" hidden>
-          <button data-view="tasks" class="nav-btn mobile-nav-btn is-active">Tasks</button>
-          <button data-view="inbox" class="nav-btn mobile-nav-btn">Inbox</button>
-          <button data-view="today" class="nav-btn mobile-nav-btn">Today</button>
-          <button data-view="review" class="nav-btn mobile-nav-btn">Review</button>
-          <button data-view="projects" class="nav-btn mobile-nav-btn">Projects</button>
-          <button data-view="settings" class="nav-btn mobile-nav-btn">Settings</button>
-        </div>
-      </header>
+      </aside>
 
-      <main class="content">
-        <section id="login-view" class="card view is-visible" data-view-panel="login">
-          <h2>Sign In</h2>
-          <p class="muted">Use your email, password, and TOTP code.</p>
-          <form id="login-form" class="stack">
-            <label>
-              Email
-              <input id="login-email" type="email" required />
-            </label>
-            <label>
-              Password
-              <input id="login-password" type="password" required />
-            </label>
-            <label>
-              TOTP Code
-              <input id="login-totp" type="text" inputmode="numeric" required />
-            </label>
-            <button type="submit" class="btn btn-primary">Sign In</button>
-          </form>
-          <p id="login-error" class="error-text"></p>
-        </section>
+      <div class="app-main">
+        <header class="global-toolbar card">
+          <div class="global-toolbar-top">
+            <button id="mobile-nav-toggle" class="nav-btn nav-toggle" type="button" aria-expanded="false" aria-controls="mobile-nav-panel">Menu</button>
+            <h2 id="active-view-title" class="toolbar-title">Tasks</h2>
+          </div>
+          <div id="mobile-nav-panel" class="mobile-nav-panel card" hidden>
+            <button data-view="tasks" class="nav-btn mobile-nav-btn is-active">Tasks</button>
+            <button data-view="inbox" class="nav-btn mobile-nav-btn">Inbox</button>
+            <button data-view="today" class="nav-btn mobile-nav-btn">Today</button>
+            <button data-view="completed" class="nav-btn mobile-nav-btn">Completed</button>
+            <button data-view="review" class="nav-btn mobile-nav-btn">Review</button>
+            <button data-view="projects" class="nav-btn mobile-nav-btn">Projects</button>
+            <button data-view="settings" class="nav-btn mobile-nav-btn">Settings</button>
+          </div>
+          <div id="global-filters" class="global-filters" hidden></div>
+        </header>
 
-        <section id="tasks-view" class="card view" data-view-panel="tasks">
-          <div id="tasks-root"></div>
-        </section>
-        <section id="inbox-view" class="card view" data-view-panel="inbox">
-          <div id="inbox-root"></div>
-        </section>
-        <section id="today-view" class="card view" data-view-panel="today">
-          <div id="today-root"></div>
-        </section>
-        <section id="review-view" class="card view" data-view-panel="review">
-          <div id="review-root"></div>
-        </section>
-        <section id="projects-view" class="card view" data-view-panel="projects">
-          <div id="projects-root"></div>
-        </section>
-        <section id="settings-view" class="card view" data-view-panel="settings">
-          <div id="settings-root"></div>
-        </section>
-      </main>
+        <main class="content">
+          <section id="login-view" class="card view is-visible" data-view-panel="login">
+            <h2>Sign In</h2>
+            <p class="muted">Use your email, password, and TOTP code.</p>
+            <form id="login-form" class="stack">
+              <label>
+                Email
+                <input id="login-email" type="email" required />
+              </label>
+              <label>
+                Password
+                <input id="login-password" type="password" required />
+              </label>
+              <label>
+                TOTP Code
+                <input id="login-totp" type="text" inputmode="numeric" required />
+              </label>
+              <button type="submit" class="btn btn-primary">Sign In</button>
+            </form>
+            <p id="login-error" class="error-text"></p>
+          </section>
 
-      <footer class="status-footer card" aria-live="polite">
-        <span id="status-backend">Backend: checking...</span>
-        <span id="status-auth">Auth: unknown</span>
-        <span id="status-api">API: -</span>
-      </footer>
+          <section id="tasks-view" class="card view" data-view-panel="tasks">
+            <div id="tasks-root"></div>
+          </section>
+          <section id="inbox-view" class="card view" data-view-panel="inbox">
+            <div id="inbox-root"></div>
+          </section>
+          <section id="today-view" class="card view" data-view-panel="today">
+            <div id="today-root"></div>
+          </section>
+          <section id="completed-view" class="card view" data-view-panel="completed">
+            <div id="completed-root"></div>
+          </section>
+          <section id="review-view" class="card view" data-view-panel="review">
+            <div id="review-root"></div>
+          </section>
+          <section id="projects-view" class="card view" data-view-panel="projects">
+            <div id="projects-root"></div>
+          </section>
+          <section id="project-view" class="card view" data-view-panel="project">
+            <div id="project-root"></div>
+          </section>
+          <section id="settings-view" class="card view" data-view-panel="settings">
+            <div id="settings-root"></div>
+          </section>
+        </main>
+
+        <footer class="status-footer card" aria-live="polite">
+          <span id="status-backend">Backend: checking...</span>
+          <span id="status-auth">Auth: unknown</span>
+          <span id="status-api">API: -</span>
+        </footer>
+      </div>
     </div>
 
     <div id="task-modal" class="modal-overlay" hidden>

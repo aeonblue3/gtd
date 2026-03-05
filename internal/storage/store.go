@@ -266,7 +266,13 @@ func (s *Store) AddSubtask(taskID, title string) error {
 	if err != nil {
 		return err
 	}
-	task.Subtasks = append(task.Subtasks, models.Subtask{Title: strings.TrimSpace(title)})
+	task.Subtasks = append(task.Subtasks, models.Subtask{
+		ID:        uuid.NewString(),
+		Title:     strings.TrimSpace(title),
+		Status:    models.SubtaskStatusOpen,
+		Priority:  models.PriorityNone,
+		CreatedAt: time.Now(),
+	})
 	return s.UpdateTask(task)
 }
 
@@ -280,6 +286,7 @@ func (s *Store) CompleteSubtask(taskID string, index int) error {
 		return fmt.Errorf("subtask index out of range")
 	}
 	now := time.Now()
+	task.Subtasks[index].Status = models.SubtaskStatusDone
 	task.Subtasks[index].CompletedAt = &now
 	return s.UpdateTask(task)
 }
