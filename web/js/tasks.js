@@ -164,24 +164,54 @@ export async function renderProjectDetail(root, projectID, filters = {}, onNavig
 }
 
 function taskCard(task, onChanged) {
-  const card = document.createElement("article");
-  card.className = "card";
-  card.style.padding = "16px";
-  card.style.display = "grid";
-  card.style.gap = "8px";
+  const wrap = document.createElement("article");
+  wrap.className = "task-compact";
+  const subtasks = normalizeTaskSubtasks(task);
+  const hasOpenSubtasks = subtasks.some((subtask) => !isSubtaskDone(subtask));
+  wrap.appendChild(renderTaskMainRow(task, hasOpenSubtasks, onChanged));
+  wrap.appendChild(renderSubtasks(task, subtasks, onChanged));
+  return wrap;
+}
+
+function renderTaskMainRow(task, hasOpenSubtasks, onChanged) {
+  const row = document.createElement("div");
+  row.className = "task-row-main";
+
+  const check = document.createElement("button");
+  check.type = "button";
+  check.className = `task-check ${task.status === "done" ? "is-done" : ""}`;
+  check.textContent = task.status === "done" ? "✓" : "";
+  check.title = task.status === "done" ? "Mark open" : "Mark done";
+  check.addEventListener("click", async () => {
+    if (task.status !== "done" && hasOpenSubtasks) {
+      showToast("Complete all subtasks before marking this task done.", true);
+      return;
+    }
+    check.disabled = true;
+    try {
+      if (task.status === "done") {
+        await updateTask(task.id, { status: "actionable" });
+      } else {
+        await completeTask(task.id);
+      }
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      showToast(err.message || "Could not update task", true);
+    } finally {
+      check.disabled = false;
+    }
+  });
+
+  const body = document.createElement("div");
+  body.className = "task-row-body";
 
   const title = document.createElement("h3");
-  title.className = "task-title";
+  title.className = "task-row-title";
+  title.textContent = task.title || "(untitled)";
   title.tabIndex = 0;
   title.title = "Click to edit title";
-  const titleText = document.createElement("span");
-  titleText.textContent = task.title || "(untitled)";
-  const titleHint = document.createElement("span");
-  titleHint.className = "task-title-hint";
-  titleHint.setAttribute("aria-hidden", "true");
-  titleHint.textContent = "edit";
-  title.appendChild(titleText);
-  title.appendChild(titleHint);
   title.addEventListener("click", () => {
     openInlineTitleEditor(title, task, onChanged);
   });
@@ -193,249 +223,324 @@ function taskCard(task, onChanged) {
   });
 
   const meta = document.createElement("p");
-  meta.className = "muted";
-  meta.style.margin = "0";
-  const bits = [task.status || "unknown", task.priority || "none"];
-  const projectName = projectNameForTask(task);
-  if (projectName) {
-    bits.push(`project ${projectName}`);
-  }
+  meta.className = "task-row-meta";
+  const dueText = task.dueDate ? new Date(task.dueDate).toLocaleDateString() : "No due date";
+  const projectText = projectNameForTask(task) || "No project";
+  meta.append(`${dueText} • ${projectText}`);
   if (task.location) {
-    bits.push(`@ ${task.location}`);
+    const loc = document.createElement("span");
+    loc.className = "location-glyph";
+    loc.textContent = "➤";
+    loc.title = "Has location";
+    meta.append(" ");
+    meta.append(loc);
   }
-  if (task.dueDate) {
-    bits.push(`due ${new Date(task.dueDate).toLocaleDateString()}`);
-  }
-  meta.textContent = bits.join(" • ");
+
+  body.appendChild(title);
+  body.appendChild(meta);
 
   const actions = document.createElement("div");
-  actions.className = "task-actions";
-  const subtasks = normalizeTaskSubtasks(task);
-  const hasOpenSubtasks = subtasks.some((subtask) => !isSubtaskDone(subtask));
-
-  const statusSelect = document.createElement("select");
-  statusSelect.innerHTML = `
-    <option value="inbox">inbox</option>
-    <option value="actionable">actionable</option>
-    <option value="waiting">waiting</option>
-    <option value="someday">someday</option>
-    <option value="done">done</option>
-  `;
-  statusSelect.value = task.status || "inbox";
-  const statusSaving = inlineSavingHint();
-  statusSelect.addEventListener("change", async () => {
-    const next = statusSelect.value;
-    statusSelect.disabled = true;
-    statusSaving.hidden = false;
-    try {
-      await updateTask(task.id, { status: next });
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      showToast(err.message || "Could not update status", true);
-      statusSelect.value = task.status || "inbox";
-    } finally {
-      statusSaving.hidden = true;
-      statusSelect.disabled = false;
+  actions.className = "row-actions";
+  actions.appendChild(renderStatusMenu(task, onChanged));
+  actions.appendChild(renderPriorityMenu(task.priority || "none", async (nextPriority) => {
+    await updateTask(task.id, { priority: nextPriority });
+    if (onChanged) {
+      await onChanged();
     }
-  });
-
-  const prioritySelect = document.createElement("select");
-  prioritySelect.innerHTML = `
-    <option value="none">priority: none</option>
-    <option value="low">priority: low</option>
-    <option value="medium">priority: medium</option>
-    <option value="high">priority: high</option>
-  `;
-  prioritySelect.value = task.priority || "none";
-  const prioritySaving = inlineSavingHint();
-  prioritySelect.addEventListener("change", async () => {
-    const next = prioritySelect.value;
-    prioritySelect.disabled = true;
-    prioritySaving.hidden = false;
-    try {
-      await updateTask(task.id, { priority: next });
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      showToast(err.message || "Could not update priority", true);
-      prioritySelect.value = task.priority || "none";
-    } finally {
-      prioritySaving.hidden = true;
-      prioritySelect.disabled = false;
-    }
-  });
-
-  const completeBtn = document.createElement("button");
-  completeBtn.className = "btn btn-primary";
-  completeBtn.textContent = task.status === "done" ? "Completed" : (hasOpenSubtasks ? "Subtasks Open" : "Mark Done");
-  completeBtn.disabled = task.status === "done" || hasOpenSubtasks;
-  completeBtn.addEventListener("click", async () => {
-    try {
-      startButtonPending(completeBtn);
-      await completeTask(task.id);
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      showToast(err.message || "Could not complete task", true);
-    } finally {
-      stopButtonPending(completeBtn);
-    }
-  });
-
-  const dueTodayBtn = document.createElement("button");
-  dueTodayBtn.className = "btn";
-  dueTodayBtn.textContent = "Due Today";
-  dueTodayBtn.addEventListener("click", async () => {
-    await quickSetDueDate(task, 0, dueTodayBtn, onChanged);
-  });
-
-  const dueTomorrowBtn = document.createElement("button");
-  dueTomorrowBtn.className = "btn";
-  dueTomorrowBtn.textContent = "Due Tomorrow";
-  dueTomorrowBtn.addEventListener("click", async () => {
-    await quickSetDueDate(task, 1, dueTomorrowBtn, onChanged);
-  });
-
-  const clearDueBtn = document.createElement("button");
-  clearDueBtn.className = "btn";
-  clearDueBtn.textContent = "Clear Due";
-  clearDueBtn.addEventListener("click", async () => {
-    try {
-      startButtonPending(clearDueBtn);
-      await updateTask(task.id, { clearDueDate: true });
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      showToast(err.message || "Could not clear due date", true);
-    } finally {
-      stopButtonPending(clearDueBtn);
-    }
-  });
-
-  const editBtn = document.createElement("button");
-  editBtn.className = "btn";
-  editBtn.textContent = "Edit Details";
-  editBtn.addEventListener("click", () => {
-    openTaskModal(task, onChanged);
-  });
-
-  actions.appendChild(statusSelect);
-  actions.appendChild(statusSaving);
-  actions.appendChild(prioritySelect);
-  actions.appendChild(prioritySaving);
-  actions.appendChild(dueTodayBtn);
-  actions.appendChild(dueTomorrowBtn);
-  actions.appendChild(clearDueBtn);
+  }));
+  const editBtn = iconButton("✎", "Edit");
+  editBtn.addEventListener("click", () => openTaskModal(task, onChanged));
   actions.appendChild(editBtn);
-  actions.appendChild(completeBtn);
 
-  const subtaskSection = renderSubtasks(task, subtasks, onChanged);
-
-  card.appendChild(title);
-  card.appendChild(meta);
-  card.appendChild(actions);
-  if (hasOpenSubtasks && task.status !== "done") {
-    const blockHint = document.createElement("p");
-    blockHint.className = "muted";
-    blockHint.style.margin = "0";
-    blockHint.textContent = "Complete all subtasks before marking this task done.";
-    card.appendChild(blockHint);
-  }
-  card.appendChild(subtaskSection);
-  return card;
+  row.appendChild(check);
+  row.appendChild(body);
+  row.appendChild(actions);
+  return row;
 }
 
 function renderSubtasks(task, subtasks, onChanged) {
   const section = document.createElement("section");
-  section.className = "subtasks-section";
+  section.className = "subtasks-compact";
 
-  const doneCount = subtasks.filter((subtask) => isSubtaskDone(subtask)).length;
-  const heading = document.createElement("h4");
-  heading.className = "subtasks-heading";
-  heading.textContent = `Subtasks (${doneCount}/${subtasks.length})`;
-  section.appendChild(heading);
-
-  const list = document.createElement("div");
-  list.className = "subtasks-list";
   for (let index = 0; index < subtasks.length; index += 1) {
-    const subtask = subtasks[index];
-    list.appendChild(renderSubtaskRow(task, subtasks, subtask, index, onChanged));
+    section.appendChild(renderSubtaskRow(task, subtasks, subtasks[index], index, onChanged));
   }
-  section.appendChild(list);
   section.appendChild(renderSubtaskCreate(task, subtasks, onChanged));
   return section;
 }
 
 function renderSubtaskRow(task, subtasks, subtask, index, onChanged) {
-  const item = document.createElement("article");
-  item.className = "subtask-item";
-
   const row = document.createElement("div");
-  row.className = "subtask-row";
+  row.className = "task-row-sub";
 
-  const doneLabel = document.createElement("label");
-  doneLabel.className = "subtask-done-toggle";
-  const doneToggle = document.createElement("input");
-  doneToggle.type = "checkbox";
-  doneToggle.checked = isSubtaskDone(subtask);
-  doneLabel.appendChild(doneToggle);
-  doneLabel.append("Done");
+  const check = document.createElement("button");
+  check.type = "button";
+  check.className = `task-check ${isSubtaskDone(subtask) ? "is-done" : ""}`;
+  check.textContent = isSubtaskDone(subtask) ? "✓" : "";
+  check.addEventListener("click", async () => {
+    check.disabled = true;
+    try {
+      const nextSubtasks = subtasks.map((current, currentIndex) => (
+        currentIndex === index
+          ? {
+              ...current,
+              status: isSubtaskDone(current) ? "open" : "done",
+              completedAt: isSubtaskDone(current) ? null : new Date().toISOString(),
+            }
+          : current
+      ));
+      await updateTask(task.id, { subtasks: nextSubtasks });
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      showToast(err.message || "Could not update subtask", true);
+    } finally {
+      check.disabled = false;
+    }
+  });
 
-  const title = document.createElement("input");
-  title.type = "text";
-  title.value = subtask.title || "";
-  title.placeholder = "Subtask title";
+  const body = document.createElement("div");
+  body.className = "task-row-body";
+  const title = document.createElement("h4");
+  title.className = "subtask-row-title";
+  title.textContent = subtask.title || "(untitled)";
+  const meta = document.createElement("p");
+  meta.className = "task-row-meta";
+  const dueText = subtask.dueDate ? new Date(subtask.dueDate).toLocaleDateString() : "No due date";
+  meta.append(dueText);
+  if (subtask.location) {
+    const loc = document.createElement("span");
+    loc.className = "location-glyph";
+    loc.textContent = "➤";
+    loc.title = "Has location";
+    meta.append(" ");
+    meta.append(loc);
+  }
+  body.appendChild(title);
+  body.appendChild(meta);
 
-  const priority = document.createElement("select");
-  priority.innerHTML = `
-    <option value="none">none</option>
-    <option value="low">low</option>
-    <option value="medium">medium</option>
-    <option value="high">high</option>
-  `;
-  priority.value = subtask.priority || "none";
+  const actions = document.createElement("div");
+  actions.className = "row-actions";
+  const statusHint = iconButton("⚡", "State via check");
+  statusHint.disabled = true;
+  actions.appendChild(statusHint);
+  actions.appendChild(renderPriorityMenu(subtask.priority || "none", async (nextPriority) => {
+    const nextSubtasks = subtasks.map((current, currentIndex) => (
+      currentIndex === index ? { ...current, priority: nextPriority } : current
+    ));
+    await updateTask(task.id, { subtasks: nextSubtasks });
+    if (onChanged) {
+      await onChanged();
+    }
+  }));
+  const edit = iconButton("✎", "Edit subtask details");
+  edit.addEventListener("click", () => {
+    openSubtaskInlineEditor(row, task, subtasks, index, onChanged);
+  });
+  actions.appendChild(edit);
 
-  const dueDate = document.createElement("input");
-  dueDate.type = "date";
-  dueDate.value = toDateInputValue(subtask.dueDate || "");
+  row.appendChild(check);
+  row.appendChild(body);
+  row.appendChild(actions);
+  return row;
+}
 
-  const location = document.createElement("input");
-  location.type = "text";
-  location.placeholder = "Location";
-  location.value = subtask.location || "";
+function renderSubtaskCreate(task, subtasks, onChanged) {
+  const row = document.createElement("form");
+  row.className = "subtask-create-row";
+  const spacer = document.createElement("span");
+  spacer.className = "subtask-spacer";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Add subtask";
+  input.required = true;
+  const add = document.createElement("button");
+  add.type = "submit";
+  add.className = "btn";
+  add.textContent = "Add";
+  row.appendChild(spacer);
+  row.appendChild(input);
+  row.appendChild(add);
+  row.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const title = input.value.trim();
+    if (!title) {
+      return;
+    }
+    startButtonPending(add);
+    try {
+      const nextSubtasks = [...subtasks, {
+        id: createClientID(),
+        title,
+        description: "",
+        notes: "",
+        status: "open",
+        priority: "none",
+        dueDate: null,
+        location: "",
+        createdAt: new Date().toISOString(),
+      }];
+      await updateTask(task.id, { subtasks: nextSubtasks });
+      input.value = "";
+      if (onChanged) {
+        await onChanged();
+      }
+    } catch (err) {
+      showToast(err.message || "Could not add subtask", true);
+    } finally {
+      stopButtonPending(add);
+    }
+  });
+  return row;
+}
 
-  const detailsToggle = document.createElement("button");
-  detailsToggle.type = "button";
-  detailsToggle.className = "btn";
-  detailsToggle.textContent = "Details";
+function renderStatusMenu(task, onChanged) {
+  const current = task.status || "inbox";
+  return iconMenuButton({
+    icon: statusIconFor(current),
+    title: "Change status",
+    items: [
+      { value: "inbox", label: "Inbox", icon: "⌂" },
+      { value: "actionable", label: "Actionable", icon: "⚡" },
+      { value: "waiting", label: "Waiting", icon: "◷" },
+      { value: "someday", label: "Someday", icon: "Z" },
+    ],
+    currentValue: current,
+    onSelect: async (value) => {
+      await updateTask(task.id, { status: value });
+      if (onChanged) {
+        await onChanged();
+      }
+    },
+  });
+}
 
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "btn";
-  save.textContent = "Save";
+function statusIconFor(status) {
+  switch (status) {
+    case "actionable":
+      return "⚡";
+    case "waiting":
+      return "◷";
+    case "someday":
+      return "Z";
+    case "inbox":
+    default:
+      return "⌂";
+  }
+}
 
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "btn";
-  remove.textContent = "Remove";
+function renderPriorityMenu(currentPriority, onSelect) {
+  const btn = iconMenuButton({
+    icon: "■",
+    title: "Change priority",
+    items: [
+      { value: "high", label: "High Priority", swatch: "is-high" },
+      { value: "medium", label: "Medium Priority", swatch: "is-medium" },
+      { value: "low", label: "Low Priority", swatch: "is-low" },
+      { value: "none", label: "No Priority", swatch: "is-none" },
+    ],
+    currentValue: currentPriority || "none",
+    onSelect,
+    renderButton: (button, value) => {
+      button.classList.add("priority-button");
+      button.dataset.priority = value || "none";
+      button.textContent = "■";
+    },
+  });
+  btn.classList.add("priority-button");
+  btn.dataset.priority = currentPriority || "none";
+  return btn;
+}
 
-  row.appendChild(doneLabel);
-  row.appendChild(title);
-  row.appendChild(priority);
-  row.appendChild(dueDate);
-  row.appendChild(location);
-  row.appendChild(detailsToggle);
-  row.appendChild(save);
-  row.appendChild(remove);
+let activeMenuCleanup = null;
+function iconMenuButton({ icon, title, items, currentValue, onSelect, renderButton }) {
+  const button = iconButton(icon, title);
+  if (renderButton) {
+    renderButton(button, currentValue);
+  }
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (activeMenuCleanup) {
+      activeMenuCleanup();
+      activeMenuCleanup = null;
+    }
+    const menu = document.createElement("div");
+    menu.className = "icon-menu";
+    for (const item of items) {
+      const opt = document.createElement("button");
+      opt.type = "button";
+      opt.className = `icon-menu-item${item.value === currentValue ? " is-active" : ""}`;
+      if (item.swatch) {
+        const sw = document.createElement("span");
+        sw.className = `priority-swatch ${item.swatch}`;
+        opt.appendChild(sw);
+      } else if (item.icon) {
+        const ic = document.createElement("span");
+        ic.className = "icon-menu-glyph";
+        ic.textContent = item.icon;
+        opt.appendChild(ic);
+      }
+      const label = document.createElement("span");
+      label.textContent = item.label;
+      opt.appendChild(label);
+      opt.addEventListener("click", async () => {
+        try {
+          await onSelect(item.value);
+        } catch (err) {
+          showToast(err.message || "Could not update", true);
+        } finally {
+          cleanup();
+        }
+      });
+      menu.appendChild(opt);
+    }
+    const rect = button.getBoundingClientRect();
+    menu.style.top = `${rect.bottom + window.scrollY + 6}px`;
+    menu.style.left = `${Math.max(12, rect.right + window.scrollX - 210)}px`;
+    document.body.appendChild(menu);
 
-  const details = document.createElement("div");
-  details.className = "subtask-details";
-  details.hidden = true;
+    const onDocClick = (docEvent) => {
+      if (!menu.contains(docEvent.target) && docEvent.target !== button) {
+        cleanup();
+      }
+    };
+    const onEsc = (escEvent) => {
+      if (escEvent.key === "Escape") {
+        cleanup();
+      }
+    };
+    const cleanup = () => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+      menu.remove();
+      if (activeMenuCleanup === cleanup) {
+        activeMenuCleanup = null;
+      }
+    };
+    activeMenuCleanup = cleanup;
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onEsc);
+  });
+  return button;
+}
+
+function iconButton(icon, title) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-action-btn";
+  button.textContent = icon;
+  button.title = title;
+  return button;
+}
+
+function openSubtaskInlineEditor(row, task, subtasks, index, onChanged) {
+  if (row.querySelector(".subtask-inline-editor")) {
+    return;
+  }
+  const subtask = subtasks[index];
+  const editor = document.createElement("div");
+  editor.className = "subtask-inline-editor";
 
   const description = document.createElement("textarea");
   description.rows = 2;
@@ -447,141 +552,60 @@ function renderSubtaskRow(task, subtasks, subtask, index, onChanged) {
   notes.placeholder = "Notes";
   notes.value = subtask.notes || "";
 
-  details.appendChild(description);
-  details.appendChild(notes);
+  const due = document.createElement("input");
+  due.type = "date";
+  due.value = toDateInputValue(subtask.dueDate || "");
 
-  detailsToggle.addEventListener("click", () => {
-    details.hidden = !details.hidden;
-  });
+  const location = document.createElement("input");
+  location.type = "text";
+  location.placeholder = "Location";
+  location.value = subtask.location || "";
 
-  const buildNextSubtasks = () => subtasks.map((current, currentIndex) => {
-    if (currentIndex !== index) {
-      return current;
-    }
-    return {
-      ...current,
-      id: current.id || createClientID(),
-      title: title.value.trim(),
-      description: description.value.trim(),
-      notes: notes.value.trim(),
-      status: doneToggle.checked ? "done" : "open",
-      priority: priority.value,
-      dueDate: dueDate.value ? dateInputToNoonISOString(dueDate.value) : null,
-      location: location.value.trim(),
-      createdAt: current.createdAt || new Date().toISOString(),
-    };
-  });
+  const actions = document.createElement("div");
+  actions.className = "task-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn btn-primary";
+  save.textContent = "Save";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn";
+  close.textContent = "Close";
+  close.addEventListener("click", () => editor.remove());
+  actions.appendChild(save);
+  actions.appendChild(close);
 
   save.addEventListener("click", async () => {
-    const nextTitle = title.value.trim();
-    if (!nextTitle) {
-      showToast("Subtask title is required.", true);
-      title.focus();
-      return;
-    }
     startButtonPending(save);
     try {
-      const nextSubtasks = buildNextSubtasks();
-      nextSubtasks[index].title = nextTitle;
+      const nextSubtasks = subtasks.map((current, currentIndex) => (
+        currentIndex === index
+          ? {
+              ...current,
+              description: description.value.trim(),
+              notes: notes.value.trim(),
+              dueDate: due.value ? dateInputToNoonISOString(due.value) : null,
+              location: location.value.trim(),
+            }
+          : current
+      ));
       await updateTask(task.id, { subtasks: nextSubtasks });
       if (onChanged) {
         await onChanged();
       }
     } catch (err) {
-      showToast(err.message || "Could not update subtask", true);
+      showToast(err.message || "Could not save subtask details", true);
     } finally {
       stopButtonPending(save);
     }
   });
 
-  doneToggle.addEventListener("change", async () => {
-    doneToggle.disabled = true;
-    try {
-      const nextSubtasks = buildNextSubtasks();
-      await updateTask(task.id, { subtasks: nextSubtasks });
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      doneToggle.checked = !doneToggle.checked;
-      showToast(err.message || "Could not update subtask status", true);
-    } finally {
-      doneToggle.disabled = false;
-    }
-  });
-
-  remove.addEventListener("click", async () => {
-    startButtonPending(remove);
-    try {
-      const nextSubtasks = subtasks.filter((_, currentIndex) => currentIndex !== index);
-      await updateTask(task.id, { subtasks: nextSubtasks });
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      showToast(err.message || "Could not remove subtask", true);
-    } finally {
-      stopButtonPending(remove);
-    }
-  });
-
-  item.appendChild(row);
-  item.appendChild(details);
-  return item;
-}
-
-function renderSubtaskCreate(task, subtasks, onChanged) {
-  const form = document.createElement("form");
-  form.className = "subtask-create";
-
-  const title = document.createElement("input");
-  title.type = "text";
-  title.placeholder = "Add subtask";
-  title.required = true;
-
-  const add = document.createElement("button");
-  add.type = "submit";
-  add.className = "btn btn-primary";
-  add.textContent = "Add";
-
-  form.appendChild(title);
-  form.appendChild(add);
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const nextTitle = title.value.trim();
-    if (!nextTitle) {
-      return;
-    }
-    startButtonPending(add);
-    try {
-      const nextSubtasks = [
-        ...subtasks,
-        {
-          id: createClientID(),
-          title: nextTitle,
-          description: "",
-          notes: "",
-          status: "open",
-          priority: "none",
-          dueDate: null,
-          location: "",
-          createdAt: new Date().toISOString(),
-        },
-      ];
-      await updateTask(task.id, { subtasks: nextSubtasks });
-      title.value = "";
-      if (onChanged) {
-        await onChanged();
-      }
-    } catch (err) {
-      showToast(err.message || "Could not add subtask", true);
-    } finally {
-      stopButtonPending(add);
-    }
-  });
-
-  return form;
+  editor.appendChild(description);
+  editor.appendChild(notes);
+  editor.appendChild(due);
+  editor.appendChild(location);
+  editor.appendChild(actions);
+  row.appendChild(editor);
 }
 
 function renderTaskList(tasks, onChanged, emptyMessage) {

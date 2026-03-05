@@ -9,5 +9,4 @@ totp-setup.png
 *.log
 coverage.out
 bin/
-bin/*
 
